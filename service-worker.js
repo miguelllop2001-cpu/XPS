@@ -1,6 +1,6 @@
 // Cada vez que subas una versión nueva, sube este número (v82 -> v83...)
 // para que a los trabajadores les llegue la nueva y no se quede la vieja pegada.
-const CACHE = 'mi-negocio-v82';
+const CACHE = 'mi-negocio-v83';
 
 self.addEventListener('install', e => {
   self.skipWaiting();

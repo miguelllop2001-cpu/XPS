@@ -171,11 +171,10 @@
     .almacen-tabs{gap:8px;}
     .almacen-tabs button{padding:13px 18px; font-size:15px;}
 
-    /* Tablas: scroll horizontal en vez de letras microscópicas */
-    .card > table, .card > div > table{display:block;}
-    table{font-size:14px; min-width:520px;}
-    th, td{padding:10px 8px;}
-    .card{overflow-x:auto;}
+    /* Tablas: caben en la pantalla; si una es muy ancha, hace scroll SOLO ella (no toda la pantalla) */
+    .tabla-scroll{overflow-x:auto; -webkit-overflow-scrolling:touch; border-radius:8px;}
+    table{font-size:13px; min-width:0;}
+    th, td{padding:9px 7px;}
 
     header h1{display:none;}
     header{justify-content:center; padding:10px 16px;}
@@ -278,7 +277,7 @@
     input, select{font-size:16px; padding:14px 12px;}
     button.primary, button.success{width:100%; padding:16px 16px; font-size:16px; min-height:52px;}
     button.ghost{padding:12px 16px; font-size:15px; min-height:46px;}
-    table{font-size:14px; min-width:480px;}
+    table{font-size:13px; min-width:0;}
     th, td{padding:10px 8px;}
     .puesto-pick{flex-direction:column;}
     .puesto-pick button{width:100%; padding:18px 22px; font-size:16px;}
@@ -300,6 +299,14 @@
   @media (max-width: 380px){
     .tabs button{font-size:11.5px; padding:11px 4px;}
   }
+
+/* ---- Tarjetas de usuario (se ven bien en teléfono, sin mover la pantalla) ---- */
+.usuario-card{ border:1px solid var(--border); border-radius:12px; padding:14px; margin-bottom:12px; background:var(--panel); }
+.usuario-top{ display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:12px; }
+.usuario-nombre{ font-weight:700; font-size:16px; margin-bottom:3px; }
+.usuario-info{ font-size:13px; color:var(--muted); margin-top:2px; }
+.usuario-botones{ display:flex; flex-wrap:wrap; gap:8px; }
+.usuario-botones button{ flex:1 1 auto; min-width:calc(50% - 4px); padding:10px 8px; font-size:13px; }
 </style>
 </head>
 <body>
@@ -1118,10 +1125,7 @@
 
     <div class="card">
       <h2>Usuarios existentes</h2>
-      <table>
-        <thead><tr><th>Nombre</th><th>Rol</th><th>Almacén</th><th>Estado</th><th></th></tr></thead>
-        <tbody id="usuariosBody"></tbody>
-      </table>
+      <div id="usuariosBody"></div>
     </div>
   </div>
 
@@ -5295,27 +5299,33 @@ async function cargarUsuarios(){
   const {data, error} = await sb.from('usuarios').select('*').order('rol').order('nombre');
   USUARIOS_TODOS = data || USUARIOS_TODOS;
   const body = document.getElementById('usuariosBody');
-  if(error || !data || data.length===0){ body.innerHTML = '<tr><td class="empty" colspan="5">Sin usuarios</td></tr>'; return; }
+  if(error || !data || data.length===0){ body.innerHTML = '<div class="empty">Sin usuarios</div>'; return; }
 
   const rolLabel = r => r==='dueno' ? 'Dueño' : (r==='administrador' ? 'Administrador' : 'Vendedor');
 
   body.innerHTML = data.map(u=>{
     const almacen = ALMACENES.find(a=>a.id===u.almacen_id);
     const esYoMismo = u.id===usuarioActual.id;
-    return `<tr>
-      <td>${u.nombre}${esYoMismo?' <span class="pill">tú</span>':''}</td>
-      <td>${rolLabel(u.rol)}</td>
-      <td>${almacen?almacen.nombre:'—'}</td>
-      <td>${(()=>{const p=pagoDeUsuario(u); return p.modo==='ninguno'?'<span style="color:var(--muted)">sin pago</span>':(p.modo==='fijo'?('$'+p.valor+' fijo'):(p.valor+(p.modo==='porc_venta'?'% venta':'% ganancia')));})()}</td>
-      <td>${u.activo?'<span class="badge ingreso">activo</span>':'<span class="badge extraccion">inactivo</span>'}</td>
-      <td>
-        <button class="ghost" onclick="cambiarPasswordUsuario(${u.id}, '${u.nombre.replace(/'/g,"\\'")}')">Cambiar contraseña</button>
+    const p = pagoDeUsuario(u);
+    const pagoTxt = p.modo==='ninguno' ? '<span style="color:var(--muted)">sin pago configurado</span>'
+      : (p.modo==='fijo' ? ('$'+p.valor+' fijo') : (p.valor+(p.modo==='porc_venta'?'% de venta':p.modo==='porc_residual'?'% residual':'% de ganancia')));
+    return `<div class="usuario-card">
+      <div class="usuario-top">
+        <div>
+          <div class="usuario-nombre">${u.nombre}${esYoMismo?' <span class="pill">tú</span>':''}</div>
+          <div class="usuario-info">${rolLabel(u.rol)}${almacen?' · '+almacen.nombre:''}</div>
+          <div class="usuario-info">💰 ${pagoTxt}</div>
+        </div>
+        <div>${u.activo?'<span class="badge ingreso">activo</span>':'<span class="badge extraccion">inactivo</span>'}</div>
+      </div>
+      <div class="usuario-botones">
+        <button class="ghost" onclick="cambiarPasswordUsuario(${u.id}, '${u.nombre.replace(/'/g,"\\'")}')">🔑 Contraseña</button>
         <button class="ghost" onclick='configurarSalario(${JSON.stringify(u)})'>💰 Salario</button>
         <button class="ghost" onclick='configurarPermisos(${JSON.stringify(u)})'>👁️ Pestañas</button>
-        ${esYoMismo ? '' : `<button class="ghost" onclick="toggleActivoUsuario(${u.id}, ${!u.activo})">${u.activo?'Desactivar':'Activar'}</button>
-        <button class="ghost" style="color:var(--red)" onclick="eliminarUsuario(${u.id}, '${u.nombre.replace(/'/g,"\\'")}')">Eliminar</button>`}
-      </td>
-    </tr>`;
+        ${esYoMismo ? '' : `<button class="ghost" onclick="toggleActivoUsuario(${u.id}, ${!u.activo})">${u.activo?'⏸️ Desactivar':'▶️ Activar'}</button>
+        <button class="ghost" style="color:var(--red)" onclick="eliminarUsuario(${u.id}, '${u.nombre.replace(/'/g,"\\'")}')">🗑️ Eliminar</button>`}
+      </div>
+    </div>`;
   }).join('');
 }
 
@@ -9293,6 +9303,6 @@ if('serviceWorker' in navigator){
 
 iniciarApp();
 </script>
-<div id="versionApp" style="position:fixed; bottom:6px; right:8px; font-size:11px; color:var(--muted); opacity:0.6; z-index:9999; pointer-events:none; user-select:none">v82</div>
+<div id="versionApp" style="position:fixed; bottom:6px; right:8px; font-size:11px; color:var(--muted); opacity:0.6; z-index:9999; pointer-events:none; user-select:none">v83</div>
 </body>
 </html>
