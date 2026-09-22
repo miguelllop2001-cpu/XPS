@@ -8091,7 +8091,7 @@ function analizarNegocio(d){
     // reposición
     reposicionFaltan,
     // deudas/dev
-    comisionesMonto, meDebenPend, yoDeboPend, devMonto, numDev: (devoluciones||[]).length,
+    comisionesMonto, gananciaNeta: gananciaTotal - comisionesMonto, meDebenPend, yoDeboPend, devMonto, numDev: (devoluciones||[]).length,
     // mercancía sospechosa
     numSalidasSosp: salidasSosp.length, valorSalidasSosp,
   };
@@ -8297,7 +8297,8 @@ async function cargarAnalizador(){
     };
     let html = `<div class="row" style="flex-wrap:wrap; gap:10px">
       ${kpiHTML('Venta', '$'+num(m.ventaTotal), 'var(--green)', m.diasCerrados+' de '+m.numPuntos+' puntos'+flechaPct(m.ventaTotal, m.ventaPrev))}
-      ${kpiHTML('Ganancia', '$'+num(m.gananciaTotal), 'var(--text)', 'margen '+num(m.margen)+'%'+flechaPct(m.gananciaTotal, m.gananciaPrev))}
+      ${kpiHTML('Ganancia bruta', '$'+num(m.gananciaTotal), 'var(--text)', 'margen '+num(m.margen)+'%'+flechaPct(m.gananciaTotal, m.gananciaPrev))}
+      ${kpiHTML('Ganancia neta', '$'+num(m.gananciaNeta), m.gananciaNeta>=0?'var(--green)':'var(--red)', 'ya con las comisiones ($'+num(m.comisionesMonto)+') descontadas')}
       ${kpiHTML('Ticket prom.', '$'+num(m.ticket), 'var(--text)', num(m.unidades)+' uds vendidas')}
       ${kpiHTML('Entró a caja', '$'+num(m.entro), 'var(--green)', 'efec $'+num(m.efectIn)+' · tarj $'+num(m.tarjIn))}
       ${kpiHTML('Salió de caja', '$'+num(m.salio), 'var(--red)', 'neto $'+num(m.neto))}
@@ -9303,6 +9304,6 @@ if('serviceWorker' in navigator){
 
 iniciarApp();
 </script>
-<div id="versionApp" style="position:fixed; bottom:6px; right:8px; font-size:11px; color:var(--muted); opacity:0.6; z-index:9999; pointer-events:none; user-select:none">v83</div>
+<div id="versionApp" style="position:fixed; bottom:6px; right:8px; font-size:11px; color:var(--muted); opacity:0.6; z-index:9999; pointer-events:none; user-select:none">v84</div>
 </body>
 </html>

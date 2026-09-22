@@ -1,6 +1,5 @@
-// Cada vez que subas una versión nueva, sube este número (v82 -> v83...)
-// para que a los trabajadores les llegue la nueva y no se quede la vieja pegada.
-const CACHE = 'mi-negocio-v83';
+// Cada vez que subas una versión nueva, sube este número para que la actualización llegue.
+const CACHE = 'mi-negocio-v84';
 
 self.addEventListener('install', e => {
   self.skipWaiting();
@@ -12,7 +11,7 @@ self.addEventListener('activate', e => {
 self.addEventListener('fetch', e => {
   const req = e.request;
   if(req.method !== 'GET') return;
-  if(req.url.includes('supabase.co')) return;   // datos siempre frescos
+  if(req.url.includes('supabase.co')) return;
   e.respondWith(
     fetch(req).then(res => {
       if(res.ok && req.url.startsWith(self.location.origin)){
