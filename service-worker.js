@@ -1,5 +1,5 @@
 // Cada vez que subas una versión nueva, sube este número para que la actualización llegue.
-const CACHE = 'mi-negocio-v84';
+const CACHE = 'mi-negocio-v86';
 
 self.addEventListener('install', e => {
   self.skipWaiting();

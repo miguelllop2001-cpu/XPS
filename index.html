@@ -827,6 +827,10 @@
           <label>Costo por unidad (lo que pagaste)</label>
           <input type="number" id="compraCosto" min="0" step="any" placeholder="0" oninput="previsualizarCompra()">
         </div>
+        <div class="field" style="max-width:100px">
+          <label>Moneda</label>
+          <select id="compraMoneda" onchange="previsualizarCompra()"><option value="cup">CUP</option><option value="usd">USD</option></select>
+        </div>
         <div class="field" style="max-width:180px">
           <label>Nota (opcional)</label>
           <input type="text" id="compraNota" placeholder="proveedor, factura...">
@@ -903,6 +907,20 @@
 
   <!-- DINERO -->
   <div id="tab-dinero" class="tab" style="display:none">
+    <div class="card">
+      <h2>💵 Tasa del dólar</h2>
+      <p style="color:var(--muted); font-size:13px; margin:0 0 12px">Los costos guardados en USD se muestran en CUP con esta tasa. Cuando el dólar cambie, actualízala aquí y todos los costos se recalculan solos.</p>
+      <div style="font-size:24px; font-weight:700; margin-bottom:4px">1 USD = <span id="tasaActualTxt" style="color:var(--green)">—</span> CUP</div>
+      <div style="color:var(--muted); font-size:12px; margin-bottom:12px" id="tasaFuenteTxt"></div>
+      <div class="row">
+        <div class="field"><label>Nueva tasa (CUP por dólar)</label><input type="number" id="tasaInput" placeholder="Ej: 720" inputmode="decimal"></div>
+        <div class="field" style="display:flex; align-items:flex-end">
+          <button class="primary" style="width:100%" onclick="ponerTasaManual()">Guardar tasa</button>
+        </div>
+      </div>
+      <button class="ghost" style="width:100%; margin-top:8px" onclick="actualizarTasaAuto()">🔄 Traer tasa de elTOQUE (automática)</button>
+      <div id="tasaMsg" class="msg"></div>
+    </div>
     <div class="card">
       <h2>Resumen de caja</h2>
       <div class="row">
@@ -1066,6 +1084,7 @@
       <div class="row">
         <div class="field"><label>Nombre</label><input type="text" id="nuevoProductoNombre" placeholder="Ej: Tubería roja"></div>
         <div class="field" style="max-width:140px"><label>Costo</label><input type="number" id="nuevoProductoCosto" step="any" placeholder="0"></div>
+        <div class="field" style="max-width:90px"><label>Moneda</label><select id="nuevoProductoMoneda"><option value="cup">CUP</option><option value="usd">USD</option></select></div>
         <div class="field" style="max-width:140px"><label>Precio de venta</label><input type="number" id="nuevoProductoPrecio" step="any" placeholder="0"></div>
         <button class="primary" onclick="crearProducto()">Agregar producto</button>
       </div>
@@ -1233,7 +1252,7 @@ let NEGOCIO_ID = null;  // se llena al entrar; es el negocio del usuario actual
 const TABLAS_CON_NEGOCIO = new Set([
   'usuarios','almacenes','productos','inventario','movimientos','ventas_dia',
   'venta_items','pedidos','caja_movimientos','deudas','devoluciones',
-  'historial_precios','recepciones'
+  'historial_precios','recepciones','tasa_cambio'
 ]);
 
 // Envuelve el .from() para inyectar el negocio automáticamente.
@@ -1290,6 +1309,7 @@ document.querySelectorAll('.tabs button').forEach(btn=>{
     if(btn.dataset.tab==='comisionadmin') cargarDinero();
     if(btn.dataset.tab==='usuarios') cargarUsuarios();
     if(btn.dataset.tab==='cobraradmin') cargarCobrosAdmin();
+    if(btn.dataset.tab==='dinero') pintarTasa();
     if(btn.dataset.tab==='estadisticas'){ prepararSelectorEstadisticas(); cargarListaVentas(); }
     if(btn.dataset.tab==='compras') prepararCompras();
     if(btn.dataset.tab==='ventasvendedor') prepararVentasPorVendedor();
@@ -1468,13 +1488,20 @@ function previsualizarCompra(){
   if(!cont) return;
   const pid = Number(compraAcHidden.value);
   const cantidad = Number(document.getElementById('compraCantidad').value) || 0;
-  const costoCompra = Number(document.getElementById('compraCosto').value) || 0;
+  const costoEscrito = Number(document.getElementById('compraCosto').value) || 0;
+  const moneda = (document.getElementById('compraMoneda')||{value:'cup'}).value;
   const p = PRODUCTOS.find(x=>x.id===pid);
 
-  if(!p || cantidad <= 0 || costoCompra <= 0){
+  if(!p || cantidad <= 0 || costoEscrito <= 0){
     cont.innerHTML = '<div style="color:var(--muted); font-size:13px">Elige el producto, la cantidad y el costo para ver cómo queda el costo nuevo.</div>';
     return;
   }
+  // Si el costo se puso en USD, lo pasamos a CUP con la tasa del día para calcular.
+  if(moneda === 'usd' && !TASA_DOLAR){
+    cont.innerHTML = '<div style="color:var(--red); font-size:13px">Pon primero la tasa del dólar en Dinero para comprar en USD.</div>';
+    return;
+  }
+  const costoCompra = moneda === 'usd' ? usdaCup(costoEscrito) : costoEscrito;
 
   const existencia = existenciaTotalProducto(pid);
   const costoViejo = Number(p.costo) || 0;
@@ -1510,7 +1537,8 @@ async function registrarCompra(){
   const pid = Number(compraAcHidden.value);
   const almacenId = Number(document.getElementById('compraAlmacen').value);
   const cantidad = Number(document.getElementById('compraCantidad').value) || 0;
-  const costoCompra = Number(document.getElementById('compraCosto').value) || 0;
+  const costoEscrito = Number(document.getElementById('compraCosto').value) || 0;
+  const monedaC = (document.getElementById('compraMoneda')||{value:'cup'}).value;
   const nota = (document.getElementById('compraNota').value || '').trim();
   const pagarDeCaja = document.getElementById('compraPagarDeCaja').checked;
 
@@ -1518,11 +1546,16 @@ async function registrarCompra(){
   if(!p){ msgEl.textContent='Elige un producto de la lista.'; msgEl.className='msg err'; return; }
   if(!almacenId){ msgEl.textContent='Elige a qué almacén entra la mercancía.'; msgEl.className='msg err'; return; }
   if(cantidad <= 0){ msgEl.textContent='Pon una cantidad mayor que cero.'; msgEl.className='msg err'; return; }
-  if(costoCompra <= 0){ msgEl.textContent='Pon el costo por unidad que pagaste.'; msgEl.className='msg err'; return; }
+  if(costoEscrito <= 0){ msgEl.textContent='Pon el costo por unidad que pagaste.'; msgEl.className='msg err'; return; }
+  if(monedaC === 'usd' && !TASA_DOLAR){ msgEl.textContent='Pon primero la tasa del dólar en Dinero para comprar en USD.'; msgEl.className='msg err'; return; }
 
+  // Si el costo se puso en USD, lo pasamos a CUP con la tasa para todos los cálculos internos.
+  const costoCompra = monedaC === 'usd' ? usdaCup(costoEscrito) : costoEscrito;
   const existencia = existenciaTotalProducto(pid);
   const costoViejo = Number(p.costo) || 0;
   const nuevoCosto = calcularCostoPromedio(costoViejo, existencia, costoCompra, cantidad);
+  // El costo en USD nuevo = costo promedio CUP ÷ tasa (para que siga variando con el dólar).
+  const nuevoCostoUsd = TASA_DOLAR ? cupaUsd(nuevoCosto) : (Number(p.costo_usd)||0);
   const alm = ALMACENES.find(a=>a.id===almacenId);
   const totalPagado = cantidad * costoCompra;
 
@@ -1535,9 +1568,9 @@ async function registrarCompra(){
 
   try{
     if(!navigator.onLine){
-      encolarOperacionAdmin('compra', {producto_id:pid, almacen_id:almacenId, cantidad, costo_compra:costoCompra, nuevo_costo:nuevoCosto, nota, clave_local:claveCompra, pagar_de_caja:pagarDeCaja, total:totalPagado, almacen_nombre: alm?alm.nombre:'', nombre:p.nombre});
+      encolarOperacionAdmin('compra', {producto_id:pid, almacen_id:almacenId, cantidad, costo_compra:costoCompra, nuevo_costo:nuevoCosto, nuevo_costo_usd:nuevoCostoUsd, nota, clave_local:claveCompra, pagar_de_caja:pagarDeCaja, total:totalPagado, almacen_nombre: alm?alm.nombre:'', nombre:p.nombre});
       // Reflejarlo de una vez en la pantalla
-      p.costo = nuevoCosto;
+      p.costo = nuevoCosto; p.costo_usd = nuevoCostoUsd;
       lsSet('adm_cache_productos', PRODUCTOS);
       msgEl.textContent = `Sin internet: la compra quedó guardada y se aplicará al volver la conexión. El costo de "${p.nombre}" pasará a $${num(nuevoCosto)}.`;
       msgEl.className = 'msg ok';
@@ -1555,7 +1588,7 @@ async function registrarCompra(){
     });
     marcarClaveMovAplicada(claveCompra);
     // 3) Se recalcula el costo del producto
-    const {error: eCosto} = await sb.from('productos').update({costo: nuevoCosto}).eq('id', pid);
+    const {error: eCosto} = await sb.from('productos').update({costo: nuevoCosto, costo_usd: nuevoCostoUsd}).eq('id', pid);
     if(eCosto) throw eCosto;
     // 4) Si se pidió, se registra el pago como salida de dinero
     if(pagarDeCaja && totalPagado > 0){
@@ -2054,6 +2087,105 @@ function fechaHoyLocal(){
 
 // ---------- REDONDEO DE COMISIONES ----------
 // Las comisiones se redondean SIEMPRE a un número cerrado (múltiplo de 5): 15, 20, 25, 30...
+// ============================================================
+//  MANEJO DEL DÓLAR (tasa CUP por USD)
+//  El costo se guarda en USD; el CUP se calcula con la tasa del día.
+// ============================================================
+let TASA_DOLAR = null;       // cuántos CUP vale 1 USD (se carga al entrar)
+let TASA_FUENTE = 'manual';
+
+// Convierte un costo en USD a CUP con la tasa actual.
+function usdaCup(usd){
+  const t = Number(TASA_DOLAR) || 0;
+  return t > 0 ? (Number(usd)||0) * t : 0;
+}
+// Convierte CUP a USD (para cuando el dueño escribe el costo en CUP).
+function cupaUsd(cup){
+  const t = Number(TASA_DOLAR) || 0;
+  return t > 0 ? (Number(cup)||0) / t : 0;
+}
+
+// Carga la tasa del negocio desde la base.
+async function cargarTasa(){
+  try{
+    const {data} = await sb.from('tasa_cambio').select('*').maybeSingle();
+    if(data){ TASA_DOLAR = Number(data.tasa); TASA_FUENTE = data.fuente || 'manual'; }
+    lsSet('app_tasa_dolar', {tasa:TASA_DOLAR, fuente:TASA_FUENTE});
+  }catch(e){
+    const g = lsGet('app_tasa_dolar', null);   // respaldo offline
+    if(g){ TASA_DOLAR = g.tasa; TASA_FUENTE = g.fuente; }
+  }
+}
+
+// Guarda una tasa nueva (manual). Recalcula el costo CUP de todos los productos.
+async function guardarTasa(nuevaTasa, fuente){
+  nuevaTasa = Number(nuevaTasa);
+  if(!(nuevaTasa > 0)){ alert('Escribe una tasa válida (mayor que 0).'); return false; }
+  if(!navigator.onLine){ alert('Necesitas internet para cambiar la tasa.'); return false; }
+  // Guardar la tasa (una por negocio: intenta update, si no existe inserta).
+  const {data:ya} = await sb.from('tasa_cambio').select('id').maybeSingle();
+  let err;
+  if(ya){ ({error:err} = await sb.from('tasa_cambio').update({tasa:nuevaTasa, fuente:fuente||'manual', actualizado:new Date().toISOString()}).eq('id', ya.id)); }
+  else  { ({error:err} = await sb.from('tasa_cambio').insert({tasa:nuevaTasa, fuente:fuente||'manual'})); }
+  if(err){ alert('Error al guardar la tasa: '+err.message); return false; }
+  TASA_DOLAR = nuevaTasa; TASA_FUENTE = fuente||'manual';
+  lsSet('app_tasa_dolar', {tasa:TASA_DOLAR, fuente:TASA_FUENTE});
+  await recalcularCostosCup();
+  return true;
+}
+
+// Recalcula el costo en CUP de cada producto = costo_usd × tasa. Solo los que tienen costo_usd.
+async function recalcularCostosCup(){
+  try{
+    const {data:prods} = await sb.from('productos').select('id, costo_usd');
+    const conUsd = (prods||[]).filter(p => Number(p.costo_usd) > 0);
+    for(const p of conUsd){
+      const nuevoCup = redondearComision(usdaCup(p.costo_usd));
+      await sb.from('productos').update({costo: nuevoCup}).eq('id', p.id);
+    }
+  }catch(e){ console.log('recalcular costos:', e); }
+}
+
+// Muestra la tasa en la pantalla de Dinero.
+function pintarTasa(){
+  const t = document.getElementById('tasaActualTxt');
+  const f = document.getElementById('tasaFuenteTxt');
+  if(t) t.textContent = TASA_DOLAR ? num(TASA_DOLAR) : 'sin poner';
+  if(f) f.textContent = TASA_DOLAR ? ('Fuente: '+(TASA_FUENTE==='eltoque'?'elTOQUE (automática)':'manual')) : 'Pon la tasa para empezar a usar precios en dólares';
+}
+
+// El dueño escribe la tasa a mano.
+async function ponerTasaManual(){
+  if(usuarioActual.rol !== 'dueno'){ alert('Solo el dueño puede cambiar la tasa.'); return; }
+  const msg = document.getElementById('tasaMsg');
+  const val = document.getElementById('tasaInput').value;
+  msg.textContent = 'Guardando…'; msg.className='msg';
+  const ok = await guardarTasa(val, 'manual');
+  if(ok){ msg.textContent = 'Tasa actualizada. Los costos se recalcularon.'; msg.className='msg ok';
+    document.getElementById('tasaInput').value=''; pintarTasa();
+    try{ await cargarTodo(); }catch(e){}
+  } else { msg.textContent=''; }
+}
+
+// Trae la tasa automática de elTOQUE (requiere la función del servidor con el token).
+async function actualizarTasaAuto(){
+  if(usuarioActual.rol !== 'dueno'){ alert('Solo el dueño puede cambiar la tasa.'); return; }
+  const msg = document.getElementById('tasaMsg');
+  msg.textContent = 'Consultando elTOQUE…'; msg.className='msg';
+  try{
+    // Llama a la función del servidor (Edge Function) que guarda el token en secreto.
+    const {data, error} = await sb.rpc('tasa_eltoque');
+    if(error) throw error;
+    const tasa = Number(data && (data.usd || data.tasa || data));
+    if(!(tasa > 0)) throw new Error('No se pudo leer la tasa');
+    const ok = await guardarTasa(tasa, 'eltoque');
+    if(ok){ msg.textContent = 'Tasa de elTOQUE: 1 USD = '+num(tasa)+' CUP'; msg.className='msg ok'; pintarTasa(); try{ await cargarTodo(); }catch(e){} }
+  }catch(e){
+    msg.innerHTML = 'La tasa automática aún no está lista (falta configurar el token de elTOQUE). Usa la manual por ahora.';
+    msg.className='msg err';
+  }
+}
+
 // Las comisiones se redondean al entero más cercano: 246.80 → 247, 246.40 → 246.
 function redondearComision(monto){
   const n = Number(monto) || 0;
@@ -2963,22 +3095,36 @@ async function eliminarAlmacen(id){
 // ---------- ADMIN: PRODUCTOS ----------
 async function crearProducto(){
   const nombre = document.getElementById('nuevoProductoNombre').value.trim();
-  const costo = Number(document.getElementById('nuevoProductoCosto').value)||0;
+  const costoEscrito = Number(document.getElementById('nuevoProductoCosto').value)||0;
+  const moneda = (document.getElementById('nuevoProductoMoneda')||{value:'cup'}).value;
   const precio_venta = Number(document.getElementById('nuevoProductoPrecio').value)||0;
   const msgEl = document.getElementById('productoMsg');
   if(!nombre){ msgEl.textContent='Escribe un nombre.'; msgEl.className='msg err'; return; }
+
+  // Según la moneda elegida, sacamos el costo en USD y en CUP.
+  // Si eligió USD pero no hay tasa puesta, avisamos.
+  let costo_usd, costo;
+  if(moneda === 'usd'){
+    if(!TASA_DOLAR){ msgEl.textContent='Pon primero la tasa del dólar en Dinero para usar costos en USD.'; msgEl.className='msg err'; return; }
+    costo_usd = costoEscrito;
+    costo = redondearComision(usdaCup(costoEscrito));   // CUP = USD × tasa
+  } else {
+    costo = costoEscrito;                                // CUP tal cual
+    costo_usd = TASA_DOLAR ? cupaUsd(costoEscrito) : 0;  // guardamos su equivalente USD si hay tasa
+  }
 
   const limpiarCampos = ()=>{
     document.getElementById('nuevoProductoNombre').value='';
     document.getElementById('nuevoProductoCosto').value='';
     document.getElementById('nuevoProductoPrecio').value='';
+    var mm=document.getElementById('nuevoProductoMoneda'); if(mm) mm.value='cup';
   };
 
   function guardarLocalYEncolar(){
     const tempId = -Date.now();
-    PRODUCTOS.push({id:tempId, nombre, costo, precio_venta});
+    PRODUCTOS.push({id:tempId, nombre, costo, costo_usd, precio_venta});
     lsSet('adm_cache_productos', PRODUCTOS);
-    encolarOperacionAdmin('crear_producto', {nombre, costo, precio_venta, tempId});
+    encolarOperacionAdmin('crear_producto', {nombre, costo, costo_usd, precio_venta, tempId});
     limpiarCampos();
     msgEl.textContent='Sin internet: guardado en el teléfono, se creará cuando vuelva la conexión.'; msgEl.className='msg ok';
     renderAdmin(); renderSelects();
@@ -2994,7 +3140,7 @@ async function crearProducto(){
       msgEl.className='msg err';
       return;
     }
-    const {error} = await sb.from('productos').insert({nombre, costo, precio_venta});
+    const {error} = await sb.from('productos').insert({nombre, costo, costo_usd, precio_venta});
     if(error) throw error;
     limpiarCampos();
     msgEl.textContent='Producto creado.'; msgEl.className='msg ok';
@@ -3733,7 +3879,7 @@ function reemplazarIdTemporalEnCola(cola, tempId, idReal){
 async function procesarOperacionAdmin(op, colaCompleta){
   const p = op.payload;
   if(op.tipo === 'crear_producto'){
-    const {data, error} = await sb.from('productos').insert({nombre:p.nombre, costo:p.costo, precio_venta:p.precio_venta}).select().single();
+    const {data, error} = await sb.from('productos').insert({nombre:p.nombre, costo:p.costo, costo_usd:p.costo_usd||0, precio_venta:p.precio_venta}).select().single();
     if(error) throw error;
     if(p.tempId) reemplazarIdTemporalEnCola(colaCompleta, p.tempId, data.id);
 
@@ -3751,7 +3897,7 @@ async function procesarOperacionAdmin(op, colaCompleta){
         clave_local: p.clave_local, cant_antes: r.antes, cant_despues: r.despues
       });
       marcarClaveMovAplicada(p.clave_local);
-      await sb.from('productos').update({costo: p.nuevo_costo}).eq('id', p.producto_id);
+      await sb.from('productos').update({costo: p.nuevo_costo, costo_usd: p.nuevo_costo_usd || 0}).eq('id', p.producto_id);
       if(p.pagar_de_caja && Number(p.total) > 0){
         const rC = await sb.from('caja_movimientos').insert({tipo:'egreso', metodo:'efectivo', categoria:'compra', monto:Number(p.total), concepto:'Compra de ' + (p.nombre||'producto') + ' x' + num(p.cantidad), almacen_id:p.almacen_id});
         if(rC && rC.error){
@@ -7794,6 +7940,7 @@ async function entrarComo(usuario){
   usuarioActual = {id:usuario.id, nombre:usuario.nombre, rol:usuario.rol, almacen_id:usuario.almacen_id, negocio_id:usuario.negocio_id, config:usuario.config, usuario:usuario.usuario};
   sessionStorage.setItem('app_sesion', JSON.stringify(usuarioActual));
   document.getElementById('seccionLogin').style.display='none';
+  await cargarTasa();  // cargar la tasa del dólar del negocio
 
   if(usuarioActual.rol === 'contador'){
     // El contador solo cuenta inventario. Lo llevamos directo al contador,
@@ -9304,6 +9451,6 @@ if('serviceWorker' in navigator){
 
 iniciarApp();
 </script>
-<div id="versionApp" style="position:fixed; bottom:6px; right:8px; font-size:11px; color:var(--muted); opacity:0.6; z-index:9999; pointer-events:none; user-select:none">v84</div>
+<div id="versionApp" style="position:fixed; bottom:6px; right:8px; font-size:11px; color:var(--muted); opacity:0.6; z-index:9999; pointer-events:none; user-select:none">v86</div>
 </body>
 </html>
