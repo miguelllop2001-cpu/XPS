@@ -919,6 +919,7 @@
         </div>
       </div>
       <button class="ghost" style="width:100%; margin-top:8px" onclick="actualizarTasaAuto()">🔄 Traer tasa de elTOQUE (automática)</button>
+      <button class="ghost" style="width:100%; margin-top:8px; border-color:var(--amber); color:var(--amber)" onclick="convertirTodosAUsd()">💲 Poner precio USD a los productos que ya existen</button>
       <div id="tasaMsg" class="msg"></div>
     </div>
     <div class="card">
@@ -1891,13 +1892,15 @@ function renderInventario(){
   const items = productosFiltrados.map(p=>{
       const inv = INVENTARIO.find(i=>i.almacen_id===a.id && i.producto_id===p.id);
       const cantidad = inv ? Number(inv.cantidad) : 0;
-      return `<tr><td>${p.nombre}</td><td class="numcell">${num(cantidad)}</td><td class="numcell">$${num(p.costo)}</td><td class="numcell">$${num(p.precio_venta)}</td></tr>`;
+      const usdTxt = Number(p.costo_usd) > 0 ? ('$'+num(p.costo_usd)) : '<span style="color:var(--muted)">—</span>';
+      const btnEd = usuarioActual.rol==='dueno' ? `<button class="ghost" style="padding:3px 8px;font-size:12px" onclick="editarCostoUsd(${p.id})">✏️ USD</button>` : '';
+      return `<tr><td>${p.nombre}</td><td class="numcell">${num(cantidad)}</td><td class="numcell">$${num(p.costo)}</td><td class="numcell">${usdTxt}</td><td class="numcell">$${num(p.precio_venta)}</td><td>${btnEd}</td></tr>`;
     }).join('');
   const totalUnidades = INVENTARIO.filter(i=>i.almacen_id===a.id).reduce((s,i)=>s+Number(i.cantidad),0);
   cont.innerHTML = `<h3 style="margin:0 0 10px;font-size:14px;display:flex;justify-content:space-between">${a.nombre} <span class="total">${num(totalUnidades)} uds.</span></h3>
     <table>
-      <thead><tr><th>Producto</th><th class="numcell">Cant.</th><th class="numcell">Costo</th><th class="numcell">P. venta</th></tr></thead>
-      <tbody>${items || `<tr><td colspan="4" class="empty">${filtro?'Ningún artículo coincide con la búsqueda':'Sin existencias'}</td></tr>`}</tbody>
+      <thead><tr><th>Producto</th><th class="numcell">Cant.</th><th class="numcell">Costo CUP</th><th class="numcell">Costo USD</th><th class="numcell">P. venta</th><th></th></tr></thead>
+      <tbody>${items || `<tr><td colspan="6" class="empty">${filtro?'Ningún artículo coincide con la búsqueda':'Sin existencias'}</td></tr>`}</tbody>
     </table>`;
 }
 document.getElementById('filtroInventarioAdmin').addEventListener('input', renderInventario);
@@ -2135,6 +2138,56 @@ async function guardarTasa(nuevaTasa, fuente){
 }
 
 // Recalcula el costo en CUP de cada producto = costo_usd × tasa. Solo los que tienen costo_usd.
+// Le pone el costo en USD a los productos que aún no lo tienen (o lo tienen en 0),
+// usando: costo_usd = costo_actual_CUP ÷ tasa. Así empiezan a variar con el dólar.
+// Editar a mano el costo en USD de UN producto (para ajustar los que quedaron mal).
+async function editarCostoUsd(id){
+  if(usuarioActual.rol !== 'dueno'){ alert('Solo el dueño puede editar costos.'); return; }
+  if(!TASA_DOLAR){ alert('Pon primero la tasa del dólar en Dinero.'); return; }
+  const p = PRODUCTOS.find(x=>x.id===id);
+  if(!p) return;
+  const actual = Number(p.costo_usd) > 0 ? p.costo_usd : (TASA_DOLAR ? cupaUsd(p.costo) : 0);
+  const val = prompt('Costo en USD de "'+p.nombre+'":\n(su costo en CUP se calculará = USD × '+num(TASA_DOLAR)+')', num(actual));
+  if(val === null) return;
+  const usd = Number(val);
+  if(!(usd > 0)){ alert('Escribe un número mayor que 0.'); return; }
+  const nuevoCup = redondearComision(usdaCup(usd));
+  const {error} = await sb.from('productos').update({costo_usd: usd, costo: nuevoCup}).eq('id', id);
+  if(error){ alert('Error: '+error.message); return; }
+  alert('"'+p.nombre+'": costo $'+num(usd)+' USD = $'+num(nuevoCup)+' CUP.');
+  try{ await cargarTodo(); }catch(e){}
+}
+
+async function convertirTodosAUsd(){
+  if(usuarioActual.rol !== 'dueno'){ alert('Solo el dueño puede hacer esto.'); return; }
+  if(!TASA_DOLAR){ alert('Pon primero la tasa del dólar arriba.'); return; }
+  if(!navigator.onLine){ alert('Necesitas internet para esto.'); return; }
+
+  const msg = document.getElementById('tasaMsg');
+  try{
+    const {data:prods, error} = await sb.from('productos').select('id, nombre, costo, costo_usd');
+    if(error) throw error;
+    // Solo los que NO tienen costo_usd todavía (para no pisar los que ya pusiste bien).
+    const pendientes = (prods||[]).filter(p => !(Number(p.costo_usd) > 0) && Number(p.costo) > 0);
+    if(pendientes.length === 0){
+      msg.textContent = 'Todos tus productos ya tienen precio en USD. No hay nada que convertir.'; msg.className='msg ok'; return;
+    }
+    if(!confirm('Se le pondrá precio en USD a '+pendientes.length+' producto(s), calculado como su costo actual ÷ '+num(TASA_DOLAR)+'. ¿Seguir?')) return;
+
+    msg.textContent = 'Convirtiendo '+pendientes.length+' productos…'; msg.className='msg';
+    let hechos = 0;
+    for(const p of pendientes){
+      const usd = cupaUsd(p.costo);   // costo CUP ÷ tasa
+      const {error:eUp} = await sb.from('productos').update({costo_usd: usd}).eq('id', p.id);
+      if(!eUp) hechos++;
+    }
+    msg.textContent = '¡Listo! '+hechos+' producto(s) ahora tienen precio en USD y cambiarán con la tasa.'; msg.className='msg ok';
+    try{ await cargarTodo(); }catch(e){}
+  }catch(err){
+    msg.textContent = 'Error: '+(err.message||err); msg.className='msg err';
+  }
+}
+
 async function recalcularCostosCup(){
   try{
     const {data:prods} = await sb.from('productos').select('id, costo_usd');
@@ -9451,6 +9504,6 @@ if('serviceWorker' in navigator){
 
 iniciarApp();
 </script>
-<div id="versionApp" style="position:fixed; bottom:6px; right:8px; font-size:11px; color:var(--muted); opacity:0.6; z-index:9999; pointer-events:none; user-select:none">v86</div>
+<div id="versionApp" style="position:fixed; bottom:6px; right:8px; font-size:11px; color:var(--muted); opacity:0.6; z-index:9999; pointer-events:none; user-select:none">v87</div>
 </body>
 </html>
