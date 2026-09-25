@@ -3460,7 +3460,7 @@ async function guardarPrecios(id){
   try{
     // Guardamos nombre + precios y pedimos la fila de vuelta con .select() para COMPROBAR
     // que el cambio realmente entró (si por permisos no afectara ninguna fila, data vendría vacío).
-    const {data, error} = await sb.from('productos').update({nombre, costo, precio_venta}).eq('id', id).select();
+    const {data, error} = await sb.from('productos').update({nombre, costo, costo_usd, precio_venta}).eq('id', id).select();
     if(error) throw error;
     if(!data || data.length===0){
       msgEl.textContent = 'El servidor no aplicó el cambio (sin permiso o el producto ya no existe). Nada se guardó.';
@@ -9501,6 +9501,6 @@ if('serviceWorker' in navigator){
 
 iniciarApp();
 </script>
-<div id="versionApp" style="position:fixed; bottom:6px; right:8px; font-size:11px; color:var(--muted); opacity:0.6; z-index:9999; pointer-events:none; user-select:none">v88</div>
+<div id="versionApp" style="position:fixed; bottom:6px; right:8px; font-size:11px; color:var(--muted); opacity:0.6; z-index:9999; pointer-events:none; user-select:none">v89</div>
 </body>
 </html>
