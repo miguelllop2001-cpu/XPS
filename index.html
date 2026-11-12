@@ -368,6 +368,7 @@
       <button data-tab="historial">🕘 Historial</button>
       <button data-tab="admin">🏷️ Productos</button>
       <button data-tab="usuarios" id="tabBtnUsuarios" style="display:none">👤 Usuarios</button>
+      <button data-tab="buscararticulo" id="tabBtnBuscarArticulo" style="display:none">🔎 Buscar artículo</button>
       <button data-tab="estadisticas" id="tabBtnEstadisticas" style="display:none">🗂️ Ventas registradas</button>
       <button data-tab="analizador" id="tabBtnAnalizador" style="display:none">🎛️ Sala de Control</button>
       <button data-tab="cobraradmin" id="tabBtnCobrarAdmin" style="display:none">💰 Cobrar</button>
@@ -785,6 +786,31 @@
   </div>
 
   <!-- HISTORIAL -->
+  <div id="tab-buscararticulo" class="tab" style="display:none">
+    <div class="card">
+      <h2>🔎 Buscar todo de un artículo</h2>
+      <p style="color:var(--muted); font-size:13px; margin:0 0 12px">Busca un producto y mira TODAS sus ventas y movimientos. Puedes filtrar por vendedor o por puesto.</p>
+      <div class="field" style="margin-bottom:10px">
+        <label>Producto</label>
+        <input type="text" id="baProductoTexto" placeholder="Escribe el nombre del producto..." autocomplete="off">
+        <input type="hidden" id="baProductoId">
+        <div id="baSugerencias" style="position:relative"></div>
+      </div>
+      <div class="row">
+        <div class="field"><label>Vendedor (opcional)</label><select id="baVendedor"><option value="">Todos</option></select></div>
+        <div class="field"><label>Puesto (opcional)</label><select id="baPuesto"><option value="">Todos</option></select></div>
+      </div>
+      <div class="row">
+        <div class="field"><label>Desde (opcional)</label><input type="date" id="baDesde"></div>
+        <div class="field"><label>Hasta (opcional)</label><input type="date" id="baHasta"></div>
+      </div>
+      <button class="primary" style="width:100%; margin-top:8px" onclick="buscarArticuloTodo()">🔎 Buscar</button>
+      <div id="baMsg" class="msg"></div>
+    </div>
+    <div id="baResumen"></div>
+    <div id="baResultados"></div>
+  </div>
+
   <div id="tab-historial" class="tab" style="display:none">
     <div class="card">
       <h2>Historial de movimientos</h2>
@@ -1311,6 +1337,7 @@ document.querySelectorAll('.tabs button').forEach(btn=>{
     if(btn.dataset.tab==='usuarios') cargarUsuarios();
     if(btn.dataset.tab==='cobraradmin') cargarCobrosAdmin();
     if(btn.dataset.tab==='dinero') pintarTasa();
+    if(btn.dataset.tab==='buscararticulo') prepararBuscarArticulo();
     if(btn.dataset.tab==='estadisticas'){ prepararSelectorEstadisticas(); cargarListaVentas(); }
     if(btn.dataset.tab==='compras') prepararCompras();
     if(btn.dataset.tab==='ventasvendedor') prepararVentasPorVendedor();
@@ -1670,6 +1697,155 @@ async function cargarCompras(){
 // Muestra todas las ventas del período agrupadas por quién las hizo, para revisar
 // el trabajo de cada trabajadora y abrir el detalle de cualquier venta.
 // ============================================================
+// ============================================================
+//  BUSCAR ARTÍCULO: todas las ventas y movimientos de un producto
+// ============================================================
+let baProdElegido = null;
+
+// Llena los selectores de vendedor y puesto, y arma el autocompletado del producto.
+async function prepararBuscarArticulo(){
+  // Asegurar que tenemos la lista de usuarios (para el filtro de vendedores).
+  if(!USUARIOS_TODOS || USUARIOS_TODOS.length===0){
+    try{ const {data:us} = await sb.from('usuarios').select('*').eq('activo', true); if(us) USUARIOS_TODOS = us; }catch(e){}
+  }
+  // Puestos
+  const selP = document.getElementById('baPuesto');
+  selP.innerHTML = '<option value="">Todos los puestos</option>' +
+    (ALMACENES||[]).map(a=>`<option value="${a.id}">${a.nombre}</option>`).join('');
+  // Vendedores (de la caché de usuarios)
+  const selV = document.getElementById('baVendedor');
+  const vends = (USUARIOS_TODOS||[]).filter(u=>u.rol==='vendedor' || u.rol==='administrador');
+  selV.innerHTML = '<option value="">Todos los vendedores</option>' +
+    vends.map(u=>`<option value="${u.id}">${u.nombre}</option>`).join('');
+  // Autocompletado de producto
+  const inp = document.getElementById('baProductoTexto');
+  const sug = document.getElementById('baSugerencias');
+  inp.oninput = ()=>{
+    const q = inp.value.trim().toLowerCase();
+    document.getElementById('baProductoId').value = '';
+    baProdElegido = null;
+    if(q.length < 2){ sug.innerHTML=''; return; }
+    const matches = (PRODUCTOS||[]).filter(p=>p.nombre.toLowerCase().includes(q)).slice(0,20);
+    sug.innerHTML = matches.map(p=>`<div onclick="elegirProdBuscar(${p.id}, '${p.nombre.replace(/'/g,"\\'")}')" style="padding:10px; border-bottom:1px solid var(--border); cursor:pointer">${p.nombre}</div>`).join('');
+  };
+}
+function elegirProdBuscar(id, nombre){
+  baProdElegido = id;
+  document.getElementById('baProductoId').value = id;
+  document.getElementById('baProductoTexto').value = nombre;
+  document.getElementById('baSugerencias').innerHTML = '';
+}
+
+async function buscarArticuloTodo(){
+  const msg = document.getElementById('baMsg');
+  const resumen = document.getElementById('baResumen');
+  const resultados = document.getElementById('baResultados');
+  const pid = Number(document.getElementById('baProductoId').value);
+  if(!pid){ msg.textContent='Elige un producto de la lista.'; msg.className='msg err'; resumen.innerHTML=''; resultados.innerHTML=''; return; }
+  if(!navigator.onLine){ msg.textContent='Necesitas internet para buscar.'; msg.className='msg err'; return; }
+
+  const vendedorId = document.getElementById('baVendedor').value;
+  const puestoId = document.getElementById('baPuesto').value;
+  const desde = document.getElementById('baDesde').value;
+  const hasta = document.getElementById('baHasta').value;
+
+  msg.textContent = 'Buscando…'; msg.className='msg';
+  try{
+    // Mapa de nombres
+    const nombreUsuario = {}; (USUARIOS_TODOS||[]).forEach(u=>nombreUsuario[u.id]=u.nombre);
+    const nombrePuesto = {}; (ALMACENES||[]).forEach(a=>nombrePuesto[a.id]=a.nombre);
+    const prod = (PRODUCTOS||[]).find(p=>p.id===pid);
+
+    // ===== VENTAS de ese producto =====
+    // Traemos los items de venta de ese producto, y sus ventas_dia para saber puesto/vendedor/fecha.
+    const {data:items} = await sb.from('venta_items').select('venta_dia_id, cantidad, precio_venta, costo, estado').eq('producto_id', pid);
+    const ventaIds = [...new Set((items||[]).map(i=>i.venta_dia_id).filter(Boolean))];
+    let ventasDia = [];
+    if(ventaIds.length){
+      const {data:vd} = await sb.from('ventas_dia').select('id, almacen_id, usuario_id, fecha').in('id', ventaIds);
+      ventasDia = vd || [];
+    }
+    const vdPorId = {}; ventasDia.forEach(v=>vdPorId[v.id]=v);
+
+    // Combinar y filtrar
+    let ventas = (items||[]).map(it=>{
+      const vd = vdPorId[it.venta_dia_id] || {};
+      return {
+        fecha: vd.fecha || '—',
+        puesto_id: vd.almacen_id,
+        puesto: nombrePuesto[vd.almacen_id] || '—',
+        vendedor_id: vd.usuario_id,
+        vendedor: nombreUsuario[vd.usuario_id] || 'Sin asignar',
+        cantidad: Number(it.cantidad)||0,
+        precio: Number(it.precio_venta)||0,
+        costo: Number(it.costo)||0,
+        estado: it.estado || ''
+      };
+    });
+    // Aplicar filtros
+    if(vendedorId) ventas = ventas.filter(v=>String(v.vendedor_id)===String(vendedorId));
+    if(puestoId) ventas = ventas.filter(v=>String(v.puesto_id)===String(puestoId));
+    if(desde) ventas = ventas.filter(v=>v.fecha!=='—' && v.fecha>=desde);
+    if(hasta) ventas = ventas.filter(v=>v.fecha!=='—' && v.fecha<=hasta);
+    ventas.sort((a,b)=> (b.fecha||'').localeCompare(a.fecha||''));
+
+    // ===== MOVIMIENTOS de ese producto =====
+    const {data:movs} = await sb.from('movimientos').select('*').eq('producto_id', pid).order('creado_en', {ascending:false});
+    let movimientos = (movs||[]).map(m=>({
+      fecha: (m.creado_en||'').slice(0,10),
+      tipo: m.tipo || '—',
+      origen_id: m.almacen_origen_id,
+      destino_id: m.almacen_destino_id,
+      origen: nombrePuesto[m.almacen_origen_id] || (m.almacen_origen_id?('#'+m.almacen_origen_id):'—'),
+      destino: nombrePuesto[m.almacen_destino_id] || (m.almacen_destino_id?('#'+m.almacen_destino_id):'—'),
+      cantidad: Number(m.cantidad)||0,
+      nota: m.nota || ''
+    }));
+    // Si filtra por puesto, mostrar los movimientos donde ese puesto es origen O destino.
+    if(puestoId) movimientos = movimientos.filter(m=>String(m.origen_id)===String(puestoId) || String(m.destino_id)===String(puestoId));
+    if(desde) movimientos = movimientos.filter(m=>m.fecha>=desde);
+    if(hasta) movimientos = movimientos.filter(m=>m.fecha<=hasta);
+
+    // ===== RESUMEN =====
+    const totalUds = ventas.filter(v=>v.estado!=='cancelado').reduce((s,v)=>s+v.cantidad,0);
+    const totalVenta = ventas.filter(v=>v.estado!=='cancelado').reduce((s,v)=>s+v.cantidad*v.precio,0);
+    const totalGanancia = ventas.filter(v=>v.estado!=='cancelado').reduce((s,v)=>s+v.cantidad*(v.precio-v.costo),0);
+
+    resumen.innerHTML = `<div class="card">
+      <h3 style="margin:0 0 10px">${prod?prod.nombre:'Producto'}</h3>
+      <div style="display:flex; flex-wrap:wrap; gap:16px">
+        <div><div style="color:var(--muted); font-size:12px">Unidades vendidas</div><div style="font-size:20px; font-weight:700">${num(totalUds)}</div></div>
+        <div><div style="color:var(--muted); font-size:12px">Total vendido</div><div style="font-size:20px; font-weight:700; color:var(--green)">$${num(totalVenta)}</div></div>
+        <div><div style="color:var(--muted); font-size:12px">Ganancia</div><div style="font-size:20px; font-weight:700; color:var(--accent)">$${num(totalGanancia)}</div></div>
+      </div>
+    </div>`;
+
+    // ===== TABLAS =====
+    let html = '<div class="card"><h3 style="margin:0 0 10px">🧾 Ventas ('+ventas.length+')</h3>';
+    if(ventas.length===0){ html += '<div class="empty">Sin ventas con esos filtros.</div>'; }
+    else {
+      html += '<div class="tabla-scroll"><table><thead><tr><th>Fecha</th><th>Puesto</th><th>Vendedor</th><th class="numcell">Cant.</th><th class="numcell">Precio</th><th class="numcell">Total</th></tr></thead><tbody>';
+      html += ventas.map(v=>`<tr${v.estado==='cancelado'?' style="opacity:.5; text-decoration:line-through"':''}><td>${v.fecha}</td><td>${v.puesto}</td><td>${v.vendedor}</td><td class="numcell">${num(v.cantidad)}</td><td class="numcell">$${num(v.precio)}</td><td class="numcell">$${num(v.cantidad*v.precio)}</td></tr>`).join('');
+      html += '</tbody></table></div>';
+    }
+    html += '</div>';
+
+    html += '<div class="card"><h3 style="margin:0 0 10px">🔁 Movimientos ('+movimientos.length+')</h3>';
+    if(movimientos.length===0){ html += '<div class="empty">Sin movimientos con esos filtros.</div>'; }
+    else {
+      html += '<div class="tabla-scroll"><table><thead><tr><th>Fecha</th><th>Tipo</th><th>Origen</th><th>Destino</th><th class="numcell">Cant.</th><th>Nota</th></tr></thead><tbody>';
+      html += movimientos.map(m=>`<tr><td>${m.fecha}</td><td>${m.tipo}</td><td>${m.origen}</td><td>${m.destino}</td><td class="numcell">${num(m.cantidad)}</td><td style="font-size:12px">${m.nota}</td></tr>`).join('');
+      html += '</tbody></table></div>';
+    }
+    html += '</div>';
+
+    resultados.innerHTML = html;
+    msg.textContent = '';
+  }catch(err){
+    msg.textContent = 'Error: '+(err.message||err); msg.className='msg err';
+  }
+}
+
 function prepararVentasPorVendedor(){
   const sel = document.getElementById('vvAlmacen');
   if(sel){
@@ -3143,8 +3319,8 @@ async function crearProducto(){
     costo_usd = costoEscrito;
     costo = redondearComision(usdaCup(costoEscrito));   // CUP = USD × tasa
   } else {
-    costo = costoEscrito;                                // CUP tal cual
-    costo_usd = TASA_DOLAR ? cupaUsd(costoEscrito) : 0;  // guardamos su equivalente USD si hay tasa
+    costo = costoEscrito;   // CUP tal cual
+    costo_usd = 0;          // registrado en CUP: NO varía con la tasa (se deja sin costo en USD)
   }
 
   const limpiarCampos = ()=>{
@@ -3423,7 +3599,7 @@ async function guardarPrecios(id){
     costo_usd = costoUsdEscrito;
     costo = redondearComision(usdaCup(costoUsdEscrito));   // CUP = USD × tasa
   } else {
-    costo_usd = TASA_DOLAR ? cupaUsd(costo) : 0;            // guardamos el USD equivalente del CUP
+    costo_usd = 0;   // sin Costo USD: el producto queda fijo en CUP y NO varía con la tasa
   }
   const nombreInput = document.getElementById('nombre-'+id);
   const nombre = nombreInput ? nombreInput.value.trim() : '';
@@ -9469,6 +9645,7 @@ function aplicarRestriccionesDeRol(){
   const esDueno = usuarioActual.rol === 'dueno';
   document.getElementById('tabBtnUsuarios').style.display = esDueno ? 'inline-block' : 'none';
   document.getElementById('tabBtnEstadisticas').style.display = esDueno ? 'inline-block' : 'none';
+  { const b=document.getElementById('tabBtnBuscarArticulo'); if(b) b.style.display = esDueno ? 'inline-block' : 'none'; }
   document.getElementById('tabBtnAnalizador').style.display = esDueno ? 'inline-block' : 'none';
   document.getElementById('tabBtnCobrarAdmin').style.display = usuarioActual.rol==='administrador' ? 'inline-block' : 'none';
   const cardComp = document.getElementById('cardComprobarInv');
@@ -9501,6 +9678,6 @@ if('serviceWorker' in navigator){
 
 iniciarApp();
 </script>
-<div id="versionApp" style="position:fixed; bottom:6px; right:8px; font-size:11px; color:var(--muted); opacity:0.6; z-index:9999; pointer-events:none; user-select:none">v89</div>
+<div id="versionApp" style="position:fixed; bottom:6px; right:8px; font-size:11px; color:var(--muted); opacity:0.6; z-index:9999; pointer-events:none; user-select:none">v91</div>
 </body>
 </html>
