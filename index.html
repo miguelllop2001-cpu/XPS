@@ -346,7 +346,7 @@
       <button data-vtab="ventadeldia" onclick="cambiarVTab('ventadeldia')">🧾 Venta del día</button>
       <button data-vtab="inventario" onclick="cambiarVTab('inventario')">📦 Mi inventario</button>
       <button data-vtab="pedir" onclick="cambiarVTab('pedir')">📝 Pedir</button>
-      <button data-vtab="recepcion" onclick="cambiarVTab('recepcion')">📥 Recepción</button>
+      <button data-vtab="recepcion" onclick="cambiarVTab('recepcion')">📥 Recepción<span id="recepCuenta" style="display:none; margin-left:6px; background:var(--red); color:#fff; border-radius:999px; padding:1px 8px; font-size:12px; font-weight:800"></span></button>
       <button data-vtab="cobrar" onclick="cambiarVTab('cobrar')">💰 Cobrar</button>
       <button data-vtab="devoluciones" onclick="cambiarVTab('devoluciones')">↩️ Devoluciones</button>
       <button data-vtab="historial" onclick="cambiarVTab('historial')">🕘 Historial</button>
@@ -358,7 +358,7 @@
       <button data-tab="inventario" class="active">📦 Inventario</button>
       <button data-tab="movimientos">🔁 Movimientos</button>
       <button data-tab="reposicion">🚚 Reposición</button>
-      <button data-tab="recepcion" class="solo-dueno" style="display:none">📥 Recepción vs envío</button>
+      <button data-tab="recepcion" class="solo-dueno" style="display:none">📥 Recepción</button>
       <button data-tab="compras">🛒 Compras</button>
       <button data-tab="pedidos">📝 Pedidos</button>
       <button data-tab="ventasvendedor">🧾 Ventas por vendedor</button>
@@ -611,20 +611,13 @@
 
     <div id="vtab-recepcion" class="vtab" style="display:none">
       <div class="card">
-        <h2>📥 Lo que me trajeron hoy</h2>
-        <p style="color:var(--muted); font-size:14px; margin-top:-4px">Anota lo que te van llevando al puesto durante el día: producto y cantidad. El dueño lo compara con lo que de verdad se te envió.</p>
-        <div class="field autocomplete">
-          <label>Producto</label>
-          <input type="text" id="recepProductoTexto" placeholder="Escribe para buscar..." autocomplete="off">
-          <input type="hidden" id="recepProductoId">
-          <div class="ac-list" id="recepProductoList"></div>
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px">
+          <h2 style="margin:0">📥 Lo que te enviaron</h2>
+          <button class="ghost" onclick="cargarRecepcionesHoy()" style="padding:6px 12px">↻</button>
         </div>
-        <div class="row" style="align-items:flex-end; gap:10px">
-          <div class="field" style="max-width:140px"><label>Cantidad</label><input type="number" id="recepCantidad" min="0" step="any" placeholder="0"></div>
-          <button class="primary" onclick="agregarRecepcion()">➕ Agregar</button>
-        </div>
+        <p style="color:var(--muted); font-size:14px; margin:6px 0 0">Cuando te llegue la mercancía, cuéntala y toca <strong>✓ Llegó</strong>. Si llegó menos o más, toca <strong>Llegó otra cantidad</strong> y pon lo que contaste.</p>
         <div id="recepMsg" class="msg"></div>
-        <div id="recepBody" style="margin-top:12px"></div>
+        <div id="recepBody" style="margin-top:10px"></div>
       </div>
     </div>
 
@@ -777,9 +770,11 @@
 
   <div id="tab-recepcion" class="tab" style="display:none">
     <div class="card">
-      <h2>📥 Recepción vs envío</h2>
-      <p style="color:var(--muted); font-size:14px; margin-top:-4px">Todo lo que los vendedores anotaron y aún NO has revisado, separado por puesto. Compáralo con lo que se envió y toca "✓ Quitar" en lo que esté bien — se borra de aquí y de la lista del vendedor.</p>
-      <button class="ghost" onclick="cargarConciliacion()">🔄 Actualizar</button>
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px">
+        <h2 style="margin:0">📥 Recepción de los puestos</h2>
+        <button class="ghost" onclick="cargarConciliacion()" style="padding:6px 12px">↻</button>
+      </div>
+      <p style="color:var(--muted); font-size:14px; margin:6px 0 0">Lo que se le envió a cada puesto y si el vendedor confirmó que le llegó. Arriba sale lo que necesita que lo mires.</p>
       <div id="recAdminMsg" class="msg"></div>
       <div id="recAdminBody" style="margin-top:8px"></div>
     </div>
@@ -8215,6 +8210,7 @@ async function entrarComo(usuario){
     // Solo la trabajadora comodín ve el botón "Cambiar de puesto"
     document.getElementById('btnCambiarPuesto').style.display = esComodin() ? 'block' : 'none';
     await abrirPanelVenta();
+    try{ cargarRecepcionesHoy(); sincronizarRecepciones(); }catch(e){}  // numerito rojo de Recepción desde que entra
   } else {
     document.getElementById('appTitle').textContent = '📦 Gestión de Almacenes';
     document.getElementById('connPill').style.display='inline';
@@ -9001,287 +8997,409 @@ async function transferirReposicionPuesto(puestoId){
 
 // ══════════════════════════════════════════════════════════════════
 // 📥 RECEPCIÓN DEL PUESTO
-// El vendedor va anotando lo que le llevan al puesto (producto + cantidad). Se guarda en la tabla
-// `recepciones` (offline: se encola y se sube al volver el internet). El dueño lo compara, por
-// puesto y día, con lo que el sistema le ENVIÓ (movimientos de ingreso/traslado con destino ese
-// puesto). Función de comparación PURA (conciliarRecepcion) para poder probarla.
+// La app le enseña al vendedor lo que se le ENVIÓ a su puesto (traslados e ingresos) y él
+// solo confirma: "✓ Llegó" o "Llegó otra cantidad". Funciona sin internet (cola en el teléfono).
+// El dueño ve, por puesto, lo confirmado, lo que llegó distinto y lo que nadie ha confirmado,
+// y corrige el inventario con un toque (cada corrección se aplica UNA sola vez).
+// Cada negocio ve solo lo suyo: todas las consultas pasan por la capa de negocio (sb).
 // ══════════════════════════════════════════════════════════════════
+const RECEPCION_DESDE = '2026-11-23';  // lo enviado antes de esta fecha no se pide confirmar
+const RECEPCION_DIAS  = 14;            // cuántos días hacia atrás se miran los envíos
+const RECEP_COLA      = 'recep_cola';  // confirmaciones guardadas en el teléfono, por subir
 
-// ---------- Autocomplete del buscador de recepción (vendedor) ----------
-const recepAcInput = document.getElementById('recepProductoTexto');
-const recepAcHidden = document.getElementById('recepProductoId');
-const recepAcList = document.getElementById('recepProductoList');
-let recepAcMatches = [];
-if(recepAcInput){
-  recepAcInput.addEventListener('input', ()=>{
-    recepAcHidden.value='';
-    const q = recepAcInput.value.trim().toLowerCase();
-    if(!q){ recepAcList.style.display='none'; recepAcMatches=[]; return; }
-    recepAcMatches = PRODUCTOS.filter(p=>p.nombre.toLowerCase().includes(q)).slice(0,30);
-    if(recepAcMatches.length===0){ recepAcList.style.display='none'; return; }
-    recepAcList.innerHTML = recepAcMatches.map((p,i)=>`<div data-i="${i}">${p.nombre}</div>`).join('');
-    recepAcList.style.display='block';
-  });
-  recepAcList.addEventListener('mousedown', e=>{
-    const div = e.target.closest('div[data-i]'); if(!div) return;
-    const p = recepAcMatches[Number(div.dataset.i)];
-    recepAcInput.value=p.nombre; recepAcHidden.value=p.id; recepAcList.style.display='none';
-  });
-  document.addEventListener('click', e=>{ if(!e.target.closest('#recepProductoTexto') && !e.target.closest('#recepProductoList')) recepAcList.style.display='none'; });
-}
+let __recepItems = [];   // lo que ve el vendedor
+let __recepAdmin = {};   // lo que ve el dueño (por id de movimiento)
+let __recepSubiendo = false;
 
-// El vendedor agrega un artículo recibido. Online: lo inserta; offline: lo encola.
-async function agregarRecepcion(){
-  const msg = document.getElementById('recepMsg');
-  const pid = Number(document.getElementById('recepProductoId').value)||0;
-  const cant = Number(document.getElementById('recepCantidad').value)||0;
-  if(!pid){ msg.textContent='Elige un producto de la lista.'; msg.className='msg err'; return; }
-  if(cant<=0){ msg.textContent='Pon una cantidad mayor que 0.'; msg.className='msg err'; return; }
-  const fila = { almacen_id: puestoActual.id, producto_id: pid, cantidad: cant, fecha: fechaHoyLocal(), usuario_id: usuarioActual.id };
-  // Limpiar el formulario ya (respuesta rápida)
-  document.getElementById('recepProductoTexto').value='';
-  document.getElementById('recepProductoId').value='';
-  document.getElementById('recepCantidad').value='';
-  if(!navigator.onLine){
-    const cola = lsGet('recep_pending', []); cola.push(fila); lsSet('recep_pending', cola);
-    msg.textContent='Guardado sin internet. Se subirá solo al volver la conexión.'; msg.className='msg ok';
-    cargarRecepcionesHoy(); return;
+// ---------- ayudantes propios ----------
+function rcEsc(t){ return String(t==null?'':t).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function rcEsDuplicado(err){ return /duplicate|unique|23505/i.test(String((err&&(err.message||''))||'') + String((err&&err.code)||'')); }
+async function rcTraerTodo(hazQuery){
+  const PAGE = 1000, todo = [];
+  for(let desde=0;;desde+=PAGE){
+    const r = await hazQuery().range(desde, desde+PAGE-1);
+    if(r.error) throw r.error;
+    if(!r.data) break;
+    todo.push(...r.data);
+    if(r.data.length < PAGE) break;
   }
-  try{
-    const { error } = await sb.from('recepciones').insert(fila);
-    if(error) throw error;
-    msg.textContent='Agregado. ✓'; msg.className='msg ok';
-    cargarRecepcionesHoy();
-  }catch(e){
-    // Si falla estando online, lo guardamos igual en la cola para no perderlo.
-    const cola = lsGet('recep_pending', []); cola.push(fila); lsSet('recep_pending', cola);
-    msg.textContent='No se pudo subir ahora; quedó guardado y se reintentará. ('+(e.message||e)+')'; msg.className='msg err';
-    cargarRecepcionesHoy();
-  }
+  return todo;
 }
-
-// Sube lo que quedó en la cola (se llama al volver el internet).
-async function sincronizarRecepciones(){
-  let cola = lsGet('recep_pending', []);
-  if(!cola.length || !navigator.onLine) return;
-  const quedan = [];
-  for(const fila of cola){
-    try{ const { error } = await sb.from('recepciones').insert(fila); if(error) throw error; }
-    catch(e){ quedan.push(fila); }
-  }
-  lsSet('recep_pending', quedan);
-  const tab = document.getElementById('vtab-recepcion');
-  if(tab && tab.style.display!=='none') cargarRecepcionesHoy();
+function rcFechaDe(ts){
+  if(!ts) return '';
+  const d = new Date(ts); if(isNaN(d)) return String(ts).slice(0,10);
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
 }
-
-async function borrarRecepcion(id){
-  if(!confirm('¿Quitar este artículo de la lista de recibidos?')) return;
-  try{ await sb.from('recepciones').delete().eq('id', id); }catch(e){}
-  cargarRecepcionesHoy();
+function rcDesde(){
+  const d = new Date(fechaHoyLocal()+'T12:00:00'); d.setDate(d.getDate()-RECEPCION_DIAS);
+  const f = rcFechaDe(d);
+  return f > RECEPCION_DESDE ? f : RECEPCION_DESDE;
 }
-function borrarRecepcionPendiente(idx){
-  const cola = lsGet('recep_pending', []);
-  cola.splice(idx,1); lsSet('recep_pending', cola);
-  cargarRecepcionesHoy();
-}
-
-// Muestra lo que el vendedor lleva anotado HOY en su puesto (subido + pendiente).
-async function cargarRecepcionesHoy(){
-  const body = document.getElementById('recepBody');
+function rcDia(f){
   const hoy = fechaHoyLocal();
-  const nombreProd = id => { const p=PRODUCTOS.find(x=>x.id===id); return p?p.nombre:('#'+id); };
-  let subidas = [];
-  if(navigator.onLine){
-    try{ const r = await sb.from('recepciones').select('*').eq('almacen_id', puestoActual.id).eq('fecha', hoy).eq('revisado', false).order('id',{ascending:false}); subidas = r.data||[]; }catch(e){ try{ const r2 = await sb.from('recepciones').select('*').eq('almacen_id', puestoActual.id).eq('fecha', hoy).order('id',{ascending:false}); subidas = r2.data||[]; }catch(e2){} }
-  }
-  const pend = lsGet('recep_pending', []).map((f,idx)=>({...f, __idx:idx})).filter(f=>f.almacen_id===puestoActual.id && f.fecha===hoy);
-  if(!subidas.length && !pend.length){ body.innerHTML='<div class="empty">Todavía no has anotado nada hoy.</div>'; return; }
-  let filas = pend.map(f=>`<tr><td>${nombreProd(f.producto_id)} <span style="color:var(--amber);font-size:11px">(por subir)</span></td><td class="numcell">${num(f.cantidad)}</td><td><button class="ghost" onclick="borrarRecepcionPendiente(${f.__idx})">🗑</button></td></tr>`).join('');
-  filas += subidas.map(f=>`<tr><td>${nombreProd(f.producto_id)}</td><td class="numcell">${num(f.cantidad)}</td><td><button class="ghost" onclick="borrarRecepcion(${f.id})">🗑</button></td></tr>`).join('');
-  body.innerHTML = `<table><thead><tr><th>Producto</th><th class="numcell">Cant.</th><th></th></tr></thead><tbody>${filas}</tbody></table>`;
+  const a = new Date(hoy+'T12:00:00'); a.setDate(a.getDate()-1);
+  if(f === hoy) return 'Hoy';
+  if(f === rcFechaDe(a)) return 'Ayer';
+  const p = String(f||'').split('-'); return p.length===3 ? p[2]+'/'+p[1]+'/'+p[0] : f;
 }
-
-// ---------- Conciliación (dueño): declarado por el vendedor vs enviado por el sistema ----------
-// PURA: recibe dos mapas {producto_id: cantidad} y devuelve la comparación por producto.
-function conciliarRecepcion(d){
-  const { declarado, enviado, nombreProd } = d;
-  const nom = nombreProd || (id=>('#'+id));
-  const ids = new Set([...Object.keys(declarado||{}), ...Object.keys(enviado||{})]);
-  const filas = [];
-  ids.forEach(pid=>{
-    const dec = Number((declarado||{})[pid]||0);
-    const env = Number((enviado||{})[pid]||0);
-    const dif = dec - env;
-    let estado;
-    if(dec===env) estado='cuadra';
-    else if(env>0 && dec===0) estado='no_anotado';   // se envió pero el vendedor no lo anotó
-    else if(dec>0 && env===0) estado='no_enviado';   // el vendedor anotó algo que no se le envió
-    else if(dec>env) estado='de_mas';                // anotó más de lo enviado
-    else estado='de_menos';                          // anotó menos de lo enviado
-    filas.push({ producto_id:Number(pid), nombre:nom(Number(pid)), declarado:dec, enviado:env, diferencia:dif, estado });
-  });
-  filas.sort((a,b)=>{
-    const cuadraA = a.estado==='cuadra'?1:0, cuadraB = b.estado==='cuadra'?1:0;
-    if(cuadraA!==cuadraB) return cuadraA-cuadraB; // primero los que NO cuadran
-    return a.nombre.localeCompare(b.nombre);
-  });
-  const cuadran = filas.filter(f=>f.estado==='cuadra').length;
-  return { filas, cuadran, descuadran: filas.length-cuadran };
+function rcHora(ts){
+  const d = new Date(ts); if(!ts || isNaN(d)) return '';
+  let h = d.getHours(); const m = String(d.getMinutes()).padStart(2,'0');
+  const ap = h < 12 ? 'a.m.' : 'p.m.'; h = h % 12 || 12;
+  return h+':'+m+' '+ap;
 }
-
-// Guarda lo mostrado en la conciliación para poder limpiar de golpe.
-let __conciliacionData = [];
-
-// Da por buena UNA fila (marca revisado / consume el envío) sin preguntar (uso interno).
-async function marcarRevisado(puestoId, productoId, enviadoNeto){
-  const upd = await sb.from('recepciones').update({revisado:true}).eq('almacen_id', puestoId).eq('producto_id', productoId).eq('revisado', false).select('id');
-  if(upd.error) throw upd.error;
-  if((upd.data||[]).length===0 && Number(enviadoNeto)>0){
-    const ins = await sb.from('recepciones').insert({almacen_id:puestoId, producto_id:productoId, cantidad:Number(enviadoNeto), fecha:fechaHoyLocal(), usuario_id:usuarioActual.id, revisado:true});
-    if(ins.error) throw ins.error;
-  }
+function rcCuando(ts){ return ts ? (rcDia(rcFechaDe(ts))+' '+rcHora(ts)).trim() : ''; }
+function rcTardanza(desde, hasta){
+  const a = new Date(desde), b = new Date(hasta); if(isNaN(a) || isNaN(b)) return '';
+  const min = Math.max(0, Math.round((b-a)/60000));
+  if(min < 60) return min+' min después';
+  const h = Math.round(min/60); if(h < 48) return h+(h===1?' hora':' horas')+' después';
+  return Math.round(h/24)+' días después';
 }
+function rcProducto(id){ const p=(PRODUCTOS||[]).find(x=>Number(x.id)===Number(id)); return p ? p.nombre : ('#'+id); }
+function rcAlmacen(id){ const a=(ALMACENES||[]).find(x=>Number(x.id)===Number(id)); return a ? a.nombre : ''; }
 
-// Da por bueno TODO un puesto.
-async function quitarPuestoRecepcion(puestoId){
-  const p = __conciliacionData.find(x=>x.pid===puestoId);
-  if(!p) return;
-  if(!confirm('¿Dar por buenos TODOS los artículos de este puesto?')) return;
-  if(!navigator.onLine){ alert('Necesitas internet.'); return; }
-  const msg=document.getElementById('recAdminMsg'); msg.textContent='Limpiando…'; msg.className='msg';
-  try{ for(const it of p.items){ await marcarRevisado(puestoId, it.prod, it.enviadoNeto); } }
-  catch(e){ msg.textContent='No se pudo del todo: '+(e.message||e); msg.className='msg err'; }
-  cargarConciliacion();
+// ¿Este movimiento es un ENVÍO al puesto? (traslado o ingreso hacia él; no devoluciones,
+// ajustes, préstamos, recuentos, ventas borradas, ni las correcciones del propio dueño)
+function esEntregaAlPuesto(m, puestoId){
+  if(!m || Number(m.almacen_destino_id) !== Number(puestoId)) return false;
+  const t = String(m.tipo||'').toLowerCase().trim();
+  if(t !== 'ingreso' && t !== 'traslado') return false;
+  if(!(Number(m.cantidad) > 0)) return false;
+  if(/devoluci|devuelto|ajuste|pr[eé]stamo|correcci|recuento|venta borrada/i.test(String(m.nota||''))) return false;
+  if(/^recdif-/.test(String(m.clave_local||''))) return false;
+  return true;
 }
-
-// Da por buena TODA la lista (todos los puestos).
-async function quitarTodoRecepcion(){
-  if(!__conciliacionData.length) return;
-  const total = __conciliacionData.reduce((s,p)=>s+p.items.length,0);
-  if(!confirm(`¿Dar por buena TODA la lista (${total} artículo(s) en ${__conciliacionData.length} puesto(s))? Se limpia la comparación y la lista de los vendedores.`)) return;
-  if(!navigator.onLine){ alert('Necesitas internet.'); return; }
-  const msg=document.getElementById('recAdminMsg'); msg.textContent='Limpiando todo…'; msg.className='msg';
-  try{ for(const p of __conciliacionData){ for(const it of p.items){ await marcarRevisado(p.pid, it.prod, it.enviadoNeto); } } }
-  catch(e){ msg.textContent='No se pudo del todo: '+(e.message||e); msg.className='msg err'; cargarConciliacion(); return; }
-  cargarConciliacion();
-}
-
-// El dueño da por bueno un artículo. En vez de borrar, lo marca como "revisado":
-// - las anotaciones del vendedor de ese producto/puesto pasan a revisado=true (salen de su lista)
-// - si NO había anotación (solo se envió), inserta una marca revisada con la cantidad enviada,
-//   para que ese envío quede "consumido" y no reaparezca en la comparación.
-async function quitarRecepcionProducto(puestoId, productoId, enviadoNeto){
-  if(!confirm('¿Dar por bueno este artículo? Sale de la comparación y de la lista del vendedor.')) return;
-  if(!navigator.onLine){ alert('Necesitas internet para hacerlo.'); return; }
-  try{
-    const upd = await sb.from('recepciones').update({revisado:true}).eq('almacen_id', puestoId).eq('producto_id', productoId).eq('revisado', false).select('id');
-    if(upd.error) throw upd.error;
-    const marco = (upd.data||[]).length;
-    // Si no había nada anotado pero SÍ se había enviado, dejamos una marca revisada.
-    if(marco===0 && Number(enviadoNeto)>0){
-      const ins = await sb.from('recepciones').insert({almacen_id:puestoId, producto_id:productoId, cantidad:Number(enviadoNeto), fecha:fechaHoyLocal(), usuario_id:usuarioActual.id, revisado:true});
-      if(ins.error) throw ins.error;
+// Junta envíos con confirmaciones. estado: pendiente | ok | diferente | revisado
+function armarRecepciones(movs, confs, puestoId){
+  const porMov = {};
+  for(const c of (confs||[])) if(c && c.movimiento_id != null) porMov[Number(c.movimiento_id)] = c;
+  const lista = (movs||[]).filter(m=>esEntregaAlPuesto(m, puestoId)).map(m=>{
+    const c = porMov[Number(m.id)] || null;
+    const enviado = Number(m.cantidad);
+    let estado = 'pendiente', recibido = null;
+    if(c){
+      recibido = Number(c.cantidad);
+      estado = Math.abs(recibido - enviado) < 1e-9 ? 'ok' : (c.revisado ? 'revisado' : 'diferente');
     }
-  }catch(e){ alert('No se pudo: '+(e.message||e)); return; }
+    return {mov:m, conf:c, estado, enviado, recibido, porSubir: !!(c && c.__porSubir)};
+  });
+  lista.sort((a,b)=> String(b.mov.creado_en||'').localeCompare(String(a.mov.creado_en||'')) || (Number(b.mov.id)-Number(a.mov.id)));
+  return lista;
+}
+// Trae envíos y confirmaciones de unos puestos (solo del negocio actual, por la capa sb).
+async function traerRecepcionesDe(puestoIds){
+  const desde = rcDesde();
+  const movs = await rcTraerTodo(()=> sb.from('movimientos')
+    .select('id,tipo,producto_id,cantidad,almacen_origen_id,almacen_destino_id,creado_en,nota,clave_local')
+    .in('almacen_destino_id', puestoIds).gte('creado_en', desde+'T00:00:00').order('id',{ascending:true}));
+  let confs;
+  try{
+    confs = await rcTraerTodo(()=> sb.from('recepciones')
+      .select('id,almacen_id,producto_id,cantidad,enviado,fecha,movimiento_id,revisado,usuario_id,creado_en')
+      .in('almacen_id', puestoIds).gte('fecha', desde).order('id',{ascending:true}));
+  }catch(e){
+    if(/movimiento_id|enviado|column/i.test(String((e&&e.message)||e))) throw new Error('FALTA_SQL');
+    throw e;
+  }
+  return {movs, confs: confs.filter(c=>c.movimiento_id != null)};
+}
+// Qué almacenes son PUESTOS en esta app: los que tienen un vendedor asignado o que vendieron
+// en estos días (así entran también los puestos de la trabajadora comodín).
+async function puestosParaRecepcion(){
+  const ids = new Set();
+  try{ const r = await sb.from('usuarios').select('almacen_id, activo'); (r.data||[]).forEach(u=>{ if(u.almacen_id && u.activo!==false) ids.add(Number(u.almacen_id)); }); }catch(e){}
+  try{ const vd = await rcTraerTodo(()=> sb.from('ventas_dia').select('almacen_id').gte('fecha', rcDesde())); vd.forEach(v=>{ if(v.almacen_id) ids.add(Number(v.almacen_id)); }); }catch(e){}
+  return (ALMACENES||[]).filter(a=>ids.has(Number(a.id)) && !a.cerrado);
+}
+
+// ════════════════ VENDEDOR ════════════════
+function pintarCuentaRecepcion(n){
+  const el = document.getElementById('recepCuenta'); if(!el) return;
+  if(n > 0){ el.textContent = n; el.style.display = 'inline-block'; } else el.style.display = 'none';
+}
+function rcConfirmacionesLocales(puestoId){
+  const cola = lsGet(RECEP_COLA, []);
+  return (Array.isArray(cola)?cola:[]).filter(f=>f && f.movimiento_id != null && Number(f.almacen_id)===Number(puestoId)).map(f=>Object.assign({}, f, {__porSubir:true}));
+}
+async function cargarRecepcionesHoy(){
+  if(!puestoActual) return;
+  const body = document.getElementById('recepBody');
+  const claveCache = 'recep_cache_' + puestoActual.id;
+  let datos = null, sinRed = false;
+  if(navigator.onLine){
+    try{ datos = await traerRecepcionesDe([puestoActual.id]); lsSet(claveCache, datos); }
+    catch(e){
+      if(e && e.message === 'FALTA_SQL'){
+        if(body) body.innerHTML = '<div class="msg err">Esta parte todavía no está lista: el dueño tiene que correr el SQL de recepción en Supabase.</div>';
+        pintarCuentaRecepcion(0); return;
+      }
+      sinRed = true;
+    }
+  } else sinRed = true;
+  if(!datos) datos = lsGet(claveCache, null);
+  if(!datos){
+    if(body) body.innerHTML = '<div class="msg err">Sin conexión. Cuando vuelva la señal vas a ver aquí lo que te enviaron.</div>';
+    return;
+  }
+  // lo confirmado en este teléfono manda aunque la base aún no lo tenga
+  const locales = rcConfirmacionesLocales(puestoActual.id);
+  const ids = new Set(locales.map(c=>Number(c.movimiento_id)));
+  const confs = (datos.confs||[]).filter(c=>!ids.has(Number(c.movimiento_id))).concat(locales);
+  __recepItems = armarRecepciones(datos.movs, confs, puestoActual.id);
+  pintarRecepcionVendedor(sinRed);
+}
+function pintarRecepcionVendedor(sinRed){
+  const pend = __recepItems.filter(x=>x.estado==='pendiente');
+  pintarCuentaRecepcion(pend.length);
+  const body = document.getElementById('recepBody'); if(!body) return;
+  let h = sinRed ? '<div class="msg" style="margin-bottom:8px">📵 Sin señal: esto es lo último que se cargó. Lo que confirmes se guarda y se sube solo.</div>' : '';
+  if(!pend.length) h += '<div style="color:var(--green); font-weight:700; padding:8px 0">✓ No tienes nada por confirmar.</div>';
+  else {
+    const porDia = {};
+    pend.forEach(x=>{ const f = rcFechaDe(x.mov.creado_en); (porDia[f]=porDia[f]||[]).push(x); });
+    for(const f of Object.keys(porDia).sort().reverse()){
+      const its = porDia[f];
+      h += `<div style="display:flex; justify-content:space-between; align-items:center; margin:14px 0 6px; gap:8px">
+        <div style="font-weight:800; font-size:16px">${rcDia(f)} <span style="color:var(--muted); font-weight:500; font-size:13px">· ${its.length} por confirmar</span></div>
+        ${its.length>1 ? `<button class="ghost" style="font-size:13px; padding:6px 10px" onclick="confirmarRecepcionDia('${f}')">✓ Llegó todo</button>` : ''}
+      </div>`;
+      h += its.map(x=>{
+        const id = Number(x.mov.id);
+        const de = x.mov.tipo==='traslado' && rcAlmacen(x.mov.almacen_origen_id) ? 'de '+rcEsc(rcAlmacen(x.mov.almacen_origen_id)) : 'entrada';
+        return `<div style="border:1px solid var(--border); border-radius:12px; padding:10px 12px; margin-bottom:8px">
+          <div style="display:flex; align-items:center; gap:10px">
+            <div style="flex:1; min-width:0"><div style="font-weight:700; overflow-wrap:anywhere">${rcEsc(rcProducto(x.mov.producto_id))}</div>
+              <div style="color:var(--muted); font-size:12px">${de}</div></div>
+            <div style="font-size:22px; font-weight:800; min-width:44px; text-align:right">${num(x.enviado)}</div>
+          </div>
+          <div style="display:flex; gap:8px; margin-top:8px">
+            <button class="primary" style="flex:1; padding:9px" onclick="confirmarRecepcion(${id})">✓ Llegó</button>
+            <button class="ghost" style="flex:1; padding:9px" onclick="abrirOtraCantidad(${id})">Llegó otra cantidad</button>
+          </div>
+          <div id="recOtra-${id}" style="display:none; margin-top:8px; gap:8px; align-items:center">
+            <input type="number" id="recOtraCant-${id}" inputmode="decimal" min="0" step="any" placeholder="¿Cuántos llegaron?" style="flex:1">
+            <button class="primary" style="padding:9px 14px" onclick="confirmarRecepcion(${id}, true)">Guardar</button>
+          </div>
+        </div>`;
+      }).join('');
+    }
+  }
+  const hechos = __recepItems.filter(x=>x.estado!=='pendiente').slice(0, 30);
+  if(hechos.length){
+    h += `<details style="margin-top:14px"><summary style="cursor:pointer; font-weight:700; color:var(--muted)">Ya confirmados (${hechos.length})</summary>`
+       + hechos.map(x=>{
+           const marca = x.estado==='ok' ? '<span style="color:var(--green)">✓</span>' : `<span style="color:var(--amber)">llegaron ${num(x.recibido)}</span>`;
+           return `<div style="display:flex; gap:8px; padding:7px 0; border-bottom:1px solid var(--border); font-size:14px">
+             <div style="flex:1; min-width:0; overflow-wrap:anywhere">${rcEsc(rcProducto(x.mov.producto_id))} <span style="color:var(--muted); font-size:12px">· ${rcDia(rcFechaDe(x.mov.creado_en))}</span>${x.porSubir?' <span style="color:var(--amber); font-size:11px">(por subir)</span>':''}</div>
+             <div style="white-space:nowrap">${num(x.enviado)} ${marca}</div></div>`;
+         }).join('') + '</details>';
+  }
+  body.innerHTML = h;
+}
+function abrirOtraCantidad(id){
+  const d = document.getElementById('recOtra-'+id); if(!d) return;
+  const abierto = d.style.display === 'flex';
+  d.style.display = abierto ? 'none' : 'flex';
+  if(!abierto){ const inp = document.getElementById('recOtraCant-'+id); if(inp) inp.focus(); }
+}
+// Se guarda PRIMERO en el teléfono y después se sube: con o sin señal, no se pierde.
+function guardarConfirmacion(x, recibido){
+  const fila = {almacen_id:Number(puestoActual.id), producto_id:Number(x.mov.producto_id), cantidad:Number(recibido),
+                enviado:Number(x.enviado), fecha:fechaHoyLocal(), usuario_id:usuarioActual.id,
+                movimiento_id:Number(x.mov.id), revisado:false};
+  let cola = lsGet(RECEP_COLA, []); if(!Array.isArray(cola)) cola = [];
+  if(cola.some(f=>f && Number(f.movimiento_id)===fila.movimiento_id)) return;  // un envío se confirma una sola vez
+  cola.push(fila); lsSet(RECEP_COLA, cola);
+}
+async function confirmarRecepcion(id, otra){
+  const x = __recepItems.find(i=>Number(i.mov.id)===Number(id) && i.estado==='pendiente'); if(!x) return;
+  let recibido = x.enviado;
+  if(otra){
+    const t = String((document.getElementById('recOtraCant-'+id)||{}).value||'').trim();
+    const v = Number(t);
+    if(t === '' || !isFinite(v) || v < 0){ alert('Pon cuántos llegaron (un número, 0 si no llegó nada).'); return; }
+    if(Math.abs(v - x.enviado) > 1e-9 && !confirm(`Vas a decir que de "${rcProducto(x.mov.producto_id)}" te enviaron ${num(x.enviado)} y llegaron ${num(v)}.\n\n¿Lo contaste bien?`)) return;
+    recibido = v;
+  }
+  guardarConfirmacion(x, recibido);
+  x.conf = {cantidad:recibido, __porSubir:true}; x.recibido = recibido; x.porSubir = true;
+  x.estado = Math.abs(recibido - x.enviado) < 1e-9 ? 'ok' : 'diferente';
+  pintarRecepcionVendedor(!navigator.onLine);
+  if(navigator.onLine){ try{ await sincronizarRecepciones(); }catch(e){} }
+}
+async function confirmarRecepcionDia(f){
+  const its = __recepItems.filter(x=>x.estado==='pendiente' && rcFechaDe(x.mov.creado_en)===f);
+  if(!its.length) return;
+  if(!confirm(`¿Te llegó TODO lo de ${rcDia(f).toLowerCase()} (${its.length} artículo${its.length===1?'':'s'}) completo?\n\nSi algo llegó de menos, mejor confírmalos uno por uno.`)) return;
+  for(const x of its){ guardarConfirmacion(x, x.enviado); x.conf={cantidad:x.enviado,__porSubir:true}; x.recibido=x.enviado; x.porSubir=true; x.estado='ok'; }
+  pintarRecepcionVendedor(!navigator.onLine);
+  if(navigator.onLine){ try{ await sincronizarRecepciones(); }catch(e){} }
+}
+// Sube lo que quedó en la cola. Si ya estaba en la base (duplicado), se da por subido.
+async function sincronizarRecepciones(){
+  if(!navigator.onLine || __recepSubiendo || !usuarioActual) return;
+  let cola = lsGet(RECEP_COLA, []);
+  if(!Array.isArray(cola) || !cola.length) return;
+  __recepSubiendo = true; let subidos = 0;
+  try{
+    const hechos = new Set();
+    for(const f of cola){
+      if(!f || f.movimiento_id == null) continue;
+      const envio = {almacen_id:f.almacen_id, producto_id:f.producto_id, cantidad:f.cantidad, enviado:f.enviado,
+                     fecha:f.fecha, usuario_id:f.usuario_id, movimiento_id:f.movimiento_id, revisado:false};
+      try{
+        const { error } = await sb.from('recepciones').insert(envio);
+        if(!error || rcEsDuplicado(error)){ hechos.add(Number(f.movimiento_id)); subidos++; }
+      }catch(e){ /* sigue en la cola para el próximo intento */ }
+    }
+    const ahora = lsGet(RECEP_COLA, []);  // se relee: pudo entrar algo nuevo mientras subía
+    lsSet(RECEP_COLA, (Array.isArray(ahora)?ahora:[]).filter(f=>f && f.movimiento_id!=null && !hechos.has(Number(f.movimiento_id))));
+  } finally { __recepSubiendo = false; }
+  if(subidos){
+    const tab = document.getElementById('vtab-recepcion');
+    if(tab && tab.style.display!=='none') cargarRecepcionesHoy();
+  }
+}
+
+// ════════════════ DUEÑO ════════════════
+async function cargarConciliacion(){
+  const body = document.getElementById('recAdminBody'); const msg = document.getElementById('recAdminMsg');
+  msg.textContent = ''; msg.className = 'msg';
+  if(!navigator.onLine){ msg.textContent = 'Necesitas internet para ver esto.'; msg.className = 'msg err'; return; }
+  body.textContent = 'Cargando…';
+  try{
+    const puestos = await puestosParaRecepcion();
+    if(!puestos.length){ body.innerHTML = '<div class="empty">No hay puestos (almacenes con un vendedor asignado).</div>'; return; }
+    const {movs, confs} = await traerRecepcionesDe(puestos.map(p=>p.id));
+    const nomUsuario = {};
+    try{ const ru = await sb.from('usuarios').select('id, nombre'); (ru.data||[]).forEach(u=>{ nomUsuario[u.id] = u.nombre; }); }catch(e){}
+    __recepAdmin = {};
+    let h = '', totPend = 0, totDif = 0, totEnvios = 0, totUnid = 0, totOk = 0;
+    const hoy = fechaHoyLocal();
+    for(const p of puestos){
+      const lista = armarRecepciones(movs, confs.filter(c=>Number(c.almacen_id)===Number(p.id)), p.id);
+      lista.forEach(x=>{ __recepAdmin[x.mov.id] = Object.assign({puesto:p}, x); });
+      const pend = lista.filter(x=>x.estado==='pendiente'), dif = lista.filter(x=>x.estado==='diferente');
+      const okN = lista.filter(x=>x.estado==='ok' || x.estado==='revisado').length;
+      const unidades = lista.reduce((t,x)=>t+x.enviado,0);
+      totPend += pend.length; totDif += dif.length; totOk += okN; totEnvios += lista.length; totUnid += unidades;
+      if(!lista.length) continue;
+      h += `<div style="border:2px solid var(--border); border-radius:14px; padding:12px; margin-bottom:14px">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap">
+          <div><div style="font-weight:800; font-size:17px">${rcEsc(p.nombre)}</div>
+            <div style="color:var(--muted); font-size:12px">${lista.length} envío${lista.length===1?'':'s'} · ${num(unidades)} unidades</div></div>
+          <div style="font-size:13px">${dif.length?`<span style="color:var(--red); font-weight:700">⚠ ${dif.length} distinto</span> · `:''}${pend.length?`<span style="color:var(--amber); font-weight:700">⏳ ${pend.length} sin confirmar</span> · `:''}<span style="color:var(--green)">✓ ${okN} bien</span></div>
+        </div>`;
+      // Llegó distinto: el dueño decide
+      h += dif.map(x=>{
+        const delta = x.recibido - x.enviado, falta = delta < 0, n = Math.abs(delta), id = Number(x.mov.id);
+        const origen = x.mov.tipo==='traslado' ? rcAlmacen(x.mov.almacen_origen_id) : '';
+        const botones = falta
+          ? (origen ? `<button class="primary" style="font-size:13px; padding:7px 10px" onclick="resolverRecepcion(${id},'devolver')">↩ Regresar ${num(n)} a ${rcEsc(origen)}</button>` : '')
+            + `<button class="ghost" style="font-size:13px; padding:7px 10px" onclick="resolverRecepcion(${id},'quitar')">➖ Quitar ${num(n)} del puesto</button>`
+          : `<button class="primary" style="font-size:13px; padding:7px 10px" onclick="resolverRecepcion(${id},'sumar')">➕ Sumar ${num(n)} al puesto</button>`;
+        return `<div style="margin-top:10px; padding:10px; border-left:3px solid var(--red); background:var(--panel2); border-radius:8px">
+          <div style="font-weight:700">${rcEsc(rcProducto(x.mov.producto_id))}</div>
+          <div style="font-size:14px; margin:2px 0 8px">${rcDia(rcFechaDe(x.mov.creado_en))}${origen?' · de '+rcEsc(origen):''}: se enviaron <strong>${num(x.enviado)}</strong> y el vendedor dice que llegaron <strong>${num(x.recibido)}</strong> (${falta?'faltan':'sobran'} ${num(n)}).</div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap">${botones}<button class="ghost" style="font-size:13px; padding:7px 10px" onclick="resolverRecepcion(${id},'dejar')">Dejar así</button></div>
+        </div>`;
+      }).join('');
+      // Sin confirmar (en rojo si ya pasaron 2 días o más)
+      if(pend.length){
+        h += `<div style="margin-top:10px; font-weight:700; color:var(--amber)">Sin confirmar</div>` + pend.map(x=>{
+          const f = rcFechaDe(x.mov.creado_en);
+          const dias = Math.round((new Date(hoy+'T12:00:00') - new Date(f+'T12:00:00'))/86400000);
+          return `<div style="display:flex; align-items:center; gap:8px; padding:7px 0; border-bottom:1px solid var(--border); font-size:14px">
+            <div style="flex:1; min-width:0; overflow-wrap:anywhere">${rcEsc(rcProducto(x.mov.producto_id))} <span style="color:${dias>=2?'var(--red)':'var(--muted)'}; font-size:12px">· ${rcDia(f)}${dias>=2?' ('+dias+' días)':''}</span></div>
+            <div style="font-weight:700">${num(x.enviado)}</div>
+            <button class="ghost" style="font-size:12px; padding:5px 8px" onclick="darPorRecibido(${Number(x.mov.id)})">✓ Dar por recibido</button></div>`;
+        }).join('');
+      }
+      // Todo lo enviado, con quién confirmó, cuándo y cuánto tardó
+      const ETQ = {ok:'<span style="color:var(--green); font-weight:700">✓ Llegó completo</span>',
+                   revisado:'<span style="color:var(--muted); font-weight:700">Revisado</span>',
+                   diferente:'<span style="color:var(--red); font-weight:700">⚠ Llegó distinto</span>',
+                   pendiente:'<span style="color:var(--amber); font-weight:700">⏳ Sin confirmar</span>'};
+      h += `<details ${lista.length<=8?'open':''} style="margin-top:10px"><summary style="cursor:pointer; font-weight:700; color:var(--accent)">Todo lo enviado a ${rcEsc(p.nombre)} (${lista.length})</summary>`
+         + lista.map(x=>{
+             const origen = x.mov.tipo==='traslado' && rcAlmacen(x.mov.almacen_origen_id) ? 'de '+rcEsc(rcAlmacen(x.mov.almacen_origen_id)) : 'entrada directa';
+             let linea3 = 'Todavía nadie lo ha confirmado';
+             if(x.conf){
+               const quien = nomUsuario[x.conf.usuario_id] || 'el puesto';
+               const cuando = x.conf.creado_en ? ' · '+rcCuando(x.conf.creado_en)+(x.mov.creado_en?' ('+rcTardanza(x.mov.creado_en, x.conf.creado_en)+')':'') : '';
+               const cuanto = x.estado==='ok' ? '' : ` · dijo que llegaron <strong>${num(x.recibido)}</strong>`;
+               linea3 = `Confirmó: ${rcEsc(quien)}${cuando}${cuanto}`;
+             }
+             return `<div style="padding:9px 0; border-bottom:1px solid var(--border)">
+               <div style="display:flex; gap:8px; align-items:baseline">
+                 <div style="flex:1; min-width:0; font-weight:700; overflow-wrap:anywhere">${rcEsc(rcProducto(x.mov.producto_id))}</div>
+                 <div style="font-weight:800; font-size:16px">${num(x.enviado)}</div>
+               </div>
+               <div style="color:var(--muted); font-size:12px">${origen} · enviado ${rcCuando(x.mov.creado_en)}</div>
+               <div style="font-size:13px; margin-top:2px">${ETQ[x.estado]} <span style="color:var(--muted)">· ${linea3}</span></div>
+             </div>`;
+           }).join('') + '</details>';
+      h += '</div>';
+    }
+    const kpi = (t,v,c)=>`<div style="flex:1; min-width:120px; border:1px solid var(--border); border-radius:12px; padding:10px"><div style="color:var(--muted); font-size:12px">${t}</div><div style="font-size:22px; font-weight:800; color:${c}">${v}</div></div>`;
+    const arriba = totEnvios ? `<div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px">
+        ${kpi('Envíos', totEnvios+' <span style="font-size:13px; font-weight:500; color:var(--muted)">('+num(totUnid)+' u.)</span>', 'var(--text)')}
+        ${kpi('Llegaron bien', totOk, 'var(--green)')}
+        ${kpi('Llegaron distinto', totDif, totDif?'var(--red)':'var(--text)')}
+        ${kpi('Sin confirmar', totPend, totPend?'var(--amber)':'var(--text)')}
+      </div>` : '';
+    body.innerHTML = h ? arriba + h : '<div class="empty">No se ha enviado nada a los puestos en estos días.</div>';
+    msg.textContent = ((totDif||totPend) ? `Hay ${totDif+totPend} cosa(s) para mirar.` : 'Todo lo enviado está confirmado. 👍') + ` (últimos ${RECEPCION_DIAS} días)`;
+  }catch(e){
+    body.textContent = '';
+    msg.textContent = (e && e.message==='FALTA_SQL') ? 'Falta correr el SQL de recepción en Supabase. Sin eso los vendedores no pueden confirmar.' : ('No se pudo cargar: '+((e&&e.message)||e));
+    msg.className = 'msg err';
+  }
+}
+// El dueño decide qué hacer con lo que llegó distinto. Cada corrección se aplica UNA sola vez
+// (clave recdif-<id del envío>), aunque se toque el botón dos veces.
+async function resolverRecepcion(movId, accion){
+  const x = __recepAdmin[movId]; if(!x || x.estado !== 'diferente') return;
+  if(!navigator.onLine){ alert('Necesitas internet.'); return; }
+  const n = Math.abs(x.recibido - x.enviado), puestoId = Number(x.puesto.id), pid = Number(x.mov.producto_id);
+  const origenId = Number(x.mov.almacen_origen_id), nomP = rcProducto(pid);
+  const textos = {
+    devolver: `Se van a regresar ${num(n)} de "${nomP}" de ${x.puesto.nombre} a ${rcAlmacen(origenId)} (o sea: nunca salieron de allí).`,
+    quitar:   `Se van a quitar ${num(n)} de "${nomP}" del inventario de ${x.puesto.nombre} (se perdieron por el camino).`,
+    sumar:    `Se van a sumar ${num(n)} de "${nomP}" al inventario de ${x.puesto.nombre}.`,
+    dejar:    'El inventario se queda como está y esto deja de salir aquí.'
+  };
+  if(!textos[accion] || !confirm(textos[accion]+'\n\n¿Seguro?')) return;
+  const msg = document.getElementById('recAdminMsg');
+  try{
+    const clave = 'recdif-'+movId;
+    if(accion === 'devolver') await aplicarLineaMovimiento({clave_local:clave, tipo:'traslado',   origen_id:puestoId, destino_id:origenId, producto_id:pid, cantidad:n, nota:`Ajuste recepción: no llegó al puesto, se regresa (envío #${movId})`});
+    if(accion === 'quitar')   await aplicarLineaMovimiento({clave_local:clave, tipo:'extraccion', origen_id:puestoId, producto_id:pid, cantidad:n, nota:`Ajuste recepción: no llegó al puesto (envío #${movId})`});
+    if(accion === 'sumar')    await aplicarLineaMovimiento({clave_local:clave, tipo:'ingreso',    origen_id:puestoId, producto_id:pid, cantidad:n, nota:`Ajuste recepción: llegó de más al puesto (envío #${movId})`});
+    const r = await sb.from('recepciones').update({revisado:true}).eq('movimiento_id', movId);
+    if(r.error) throw r.error;
+    msg.textContent = 'Listo. ✓'; msg.className = 'msg ok';
+    if(accion !== 'dejar'){ try{ await cargarTodo(); }catch(e){} }
+  }catch(e){ alert('No se pudo: '+((e&&e.message)||e)); }
+  cargarConciliacion();
+}
+// Si el vendedor no confirma, el dueño puede darlo por recibido completo.
+async function darPorRecibido(movId){
+  const x = __recepAdmin[movId]; if(!x || x.estado !== 'pendiente') return;
+  if(!confirm(`¿Dar por recibido "${rcProducto(x.mov.producto_id)}" (${num(x.enviado)}) en ${x.puesto.nombre}?`)) return;
+  if(!navigator.onLine){ alert('Necesitas internet.'); return; }
+  const r = await sb.from('recepciones').insert({almacen_id:Number(x.puesto.id), producto_id:Number(x.mov.producto_id), cantidad:x.enviado, enviado:x.enviado,
+    fecha:fechaHoyLocal(), usuario_id:usuarioActual.id, movimiento_id:Number(movId), revisado:true});
+  if(r.error && !rcEsDuplicado(r.error)){ alert('No se pudo: '+r.error.message); return; }
   cargarConciliacion();
 }
 
-// Muestra TODO lo que está pendiente de cuadrar, por puesto: tanto lo que el vendedor anotó como
-// lo que el admin/dueño ENVIÓ al puesto (aunque el vendedor no lo haya anotado). Lo ya revisado
-// no aparece. Compara "Anotó" (vendedor) contra "Enviado" (sistema) y marca las diferencias.
-async function cargarConciliacion(){
-  const body = document.getElementById('recAdminBody');
-  const msg = document.getElementById('recAdminMsg');
-  msg.textContent='';
-  if(!navigator.onLine){ msg.textContent='Necesitas internet para ver esto.'; msg.className='msg err'; return; }
-  body.textContent='Cargando…';
-  try{
-    const nombreProd = id => { const p=(PRODUCTOS||[]).find(x=>x.id===id); return p?p.nombre:('#'+id); };
-    const nombreAlm = id => { const a=(ALMACENES||[]).find(x=>x.id===id); return a?a.nombre:('Puesto '+id); };
-    const puestosApp = (ALMACENES||[]).filter(esPuntoVenta).map(a=>a.id);
-    const fechaLocal = ts => { if(!ts) return ''; const dd=new Date(ts); if(isNaN(dd)) return (ts||'').slice(0,10); const z=new Date(dd.getTime()-dd.getTimezoneOffset()*60000); return z.toISOString().slice(0,10); };
-    const sumaDias = (f, n) => { const d=new Date(f+'T00:00:00'); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); };
-    const hoy = fechaHoyLocal();
-
-    // 1) Recepciones (todas: pendientes y revisadas). Paginado.
-    const rec=[]; { const PAGE=1000; let d=0; for(;;){ const r=await sb.from('recepciones').select('almacen_id,producto_id,cantidad,fecha,revisado').range(d,d+PAGE-1); if(r.error||!r.data)break; rec.push(...r.data); if(r.data.length<PAGE)break; d+=PAGE; } }
-    // declarado (revisado=false) y revisado (revisado=true) por puesto/producto; fechas de lo pendiente
-    const declPP = {}, revPP = {}, fechasP = {};
-    rec.forEach(r=>{
-      const a=r.almacen_id, pid=r.producto_id, c=Number(r.cantidad||0);
-      if(r.revisado){ (revPP[a]=revPP[a]||{})[pid]=(revPP[a][pid]||0)+c; }
-      else { (declPP[a]=declPP[a]||{})[pid]=(declPP[a][pid]||0)+c; (fechasP[a]=fechasP[a]||new Set()).add(r.fecha); }
-    });
-
-    // 2) Ventana de fechas para el "enviado": desde 21 días atrás (o desde la anotación pendiente
-    //    más vieja, lo que sea más temprano) hasta hoy.
-    let inicio = sumaDias(hoy, -21);
-    Object.values(fechasP).forEach(set=>{ [...set].filter(Boolean).forEach(f=>{ const w=sumaDias(f,-1); if(w<inicio) inicio=w; }); });
-
-    // 3) Movimientos de ingreso/traslado hacia CUALQUIER puesto, desde 'inicio'. Paginado.
-    const mov=[]; { const PAGE=1000; let d=0; for(;;){ const r=await sb.from('movimientos').select('almacen_destino_id,producto_id,cantidad,tipo,creado_en').in('almacen_destino_id', puestosApp).gte('creado_en', inicio+'T00:00:00').range(d,d+PAGE-1); if(r.error||!r.data)break; mov.push(...r.data); if(r.data.length<PAGE)break; d+=PAGE; } }
-    const enviadoPP = {};
-    mov.forEach(m=>{ if(!(m.tipo==='ingreso'||m.tipo==='traslado')) return; const a=m.almacen_destino_id; if(!puestosApp.includes(a)) return; (enviadoPP[a]=enviadoPP[a]||{})[m.producto_id]=(enviadoPP[a][m.producto_id]||0)+Number(m.cantidad||0); });
-
-    // 4) Armar por puesto: producto sale si tiene anotado pendiente O enviado-neto > 0
-    const badge = est => {
-      if(est==='cuadra') return '<span style="color:var(--green)">✓ cuadra</span>';
-      if(est==='no_anotado') return '<span style="color:var(--red)">⛔ enviado, NO lo anotó</span>';
-      if(est==='no_enviado') return '<span style="color:var(--amber)">⚠ anotó, no se envió</span>';
-      if(est==='de_mas') return '<span style="color:var(--amber)">▲ anotó de más</span>';
-      return '<span style="color:var(--amber)">▼ anotó de menos</span>';
-    };
-    const puestos = [...new Set([...Object.keys(declPP), ...Object.keys(enviadoPP)].map(Number))];
-    let html=''; let totalPend=0;
-    puestos.forEach(pid=>{
-      const decl = declPP[pid]||{}, env = enviadoPP[pid]||{}, rev = revPP[pid]||{};
-      const productos = [...new Set([...Object.keys(decl), ...Object.keys(env)].map(Number))];
-      const filas = [];
-      productos.forEach(prod=>{
-        const anoto = Number(decl[prod]||0);
-        const enviadoNeto = Math.max(0, Number(env[prod]||0) - Number(rev[prod]||0)); // descontamos lo ya revisado
-        if(anoto<=0 && enviadoNeto<=0) return;
-        const dif = anoto - enviadoNeto;
-        let estado;
-        if(anoto===enviadoNeto) estado='cuadra';
-        else if(enviadoNeto>0 && anoto===0) estado='no_anotado';
-        else if(anoto>0 && enviadoNeto===0) estado='no_enviado';
-        else if(anoto>enviadoNeto) estado='de_mas';
-        else estado='de_menos';
-        filas.push({ prod, nombre:nombreProd(prod), anoto, enviadoNeto, dif, estado });
-      });
-      if(!filas.length) return;
-      filas.sort((a,b)=>{ const ca=a.estado==='cuadra'?1:0, cb=b.estado==='cuadra'?1:0; if(ca!==cb) return ca-cb; return a.nombre.localeCompare(b.nombre); });
-      totalPend += filas.length;
-      html += `<div style="border:2px solid var(--border); border-radius:14px; padding:12px; margin-bottom:16px; overflow:hidden">
-        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px; flex-wrap:wrap">
-          <div style="font-weight:800; font-size:17px">${nombreAlm(pid)} <span style="color:var(--muted); font-weight:500; font-size:14px">— ${filas.length} por revisar</span></div>
-          <button class="ghost" style="font-size:13px; padding:6px 12px" onclick="quitarPuestoRecepcion(${pid})">✓ Quitar todo</button>
-        </div>
-        <div style="overflow-x:auto; -webkit-overflow-scrolling:touch">
-        <table style="min-width:520px"><thead><tr><th>Producto</th><th class="numcell">Anotó</th><th class="numcell">Enviado</th><th class="numcell">Dif.</th><th>Estado</th><th></th></tr></thead><tbody>`;
-      html += filas.map(f=>`<tr>
-        <td>${f.nombre}</td>
-        <td class="numcell">${num(f.anoto)}</td>
-        <td class="numcell">${num(f.enviadoNeto)}</td>
-        <td class="numcell" style="font-weight:700; color:${f.dif===0?'var(--muted)':(f.dif>0?'var(--red)':'var(--amber)')}">${f.dif>0?'+':''}${num(f.dif)}</td>
-        <td>${badge(f.estado)}</td>
-        <td><button class="ghost" onclick="quitarRecepcionProducto(${pid}, ${f.prod}, ${f.enviadoNeto})">✓ Quitar</button></td>
-      </tr>`).join('');
-      html += `</tbody></table></div></div>`;
-    });
-    if(!totalPend){ body.innerHTML='<div class="empty">No hay nada por revisar. Todo cuadra. 👍</div>'; msg.textContent=''; __conciliacionData=[]; return; }
-    // Guardamos lo mostrado para el botón "Quitar todo".
-    __conciliacionData = puestos.map(pid=>{
-      const decl = declPP[pid]||{}, env = enviadoPP[pid]||{}, rev = revPP[pid]||{};
-      const items = [...new Set([...Object.keys(decl), ...Object.keys(env)].map(Number))].map(prod=>({ prod, enviadoNeto: Math.max(0, Number(env[prod]||0) - Number(rev[prod]||0)) })).filter(x=> (Number(decl[x.prod]||0)>0) || x.enviadoNeto>0);
-      return { pid, items };
-    }).filter(p=>p.items.length);
-    body.innerHTML = `<button class="ghost" style="width:100%; margin-bottom:12px" onclick="quitarTodoRecepcion()">✓ Quitar todo (dar por buena toda la lista)</button>` + html;
-    msg.textContent = `${totalPend} artículo(s) por revisar en ${puestos.length} puesto(s).`;
-    msg.className = 'msg';
-  }catch(e){ body.textContent=''; msg.textContent='No se pudo cargar: '+(e.message||e)+'. (¿Corriste el SQL de la columna "revisado"?)'; msg.className='msg err'; }
-}
+// ---------- arranque ----------
+// Cada 3 minutos el vendedor refresca lo que le enviaron (para el numerito rojo del menú)
+setInterval(()=>{ try{ if(navigator.onLine && usuarioActual && puestoActual) cargarRecepcionesHoy(); }catch(e){} }, 180000);
+// Cada minuto intenta subir lo confirmado sin internet (además del evento 'online' de la app)
+setInterval(()=>{ try{ sincronizarRecepciones(); }catch(e){} }, 60000);
 
 // ══════════════════════════════════════════════════════════════════
 // 💬 ASISTENTE CON IA (solo dueño) — hace preguntas sobre el negocio.
@@ -9678,6 +9796,6 @@ if('serviceWorker' in navigator){
 
 iniciarApp();
 </script>
-<div id="versionApp" style="position:fixed; bottom:6px; right:8px; font-size:11px; color:var(--muted); opacity:0.6; z-index:9999; pointer-events:none; user-select:none">v91</div>
+<div id="versionApp" style="position:fixed; bottom:6px; right:8px; font-size:11px; color:var(--muted); opacity:0.6; z-index:9999; pointer-events:none; user-select:none">v92</div>
 </body>
 </html>
