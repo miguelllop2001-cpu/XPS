@@ -1867,6 +1867,7 @@ function prepararVentasPorVendedor(){
 }
 
 async function cargarVentasPorVendedor(){
+  try{ await arreglarRecuperadasSinDescuento(); }catch(e){}
   const msgEl = document.getElementById('vvMsg');
   const resEl = document.getElementById('vvResumen');
   const bodyEl = document.getElementById('vvBody');
@@ -3077,6 +3078,8 @@ let historialHayMas = true;   // ¿queda historial más viejo por traer?
 let historialCargando = false;
 
 async function cargarHistorial(){
+  // Las ventas recuperadas tienen que tener su descuento ligado para salir como venta propia aquí
+  try{ await arreglarRecuperadasSinDescuento(); }catch(e){}
   // Empezar de cero (al abrir la pestaña o al refrescar)
   HISTORIAL_MOVS = [];
   historialHayMas = true;
@@ -4845,6 +4848,7 @@ async function traerItemsDe(ids, cols){
 // TODAS LAS VENTAS REGISTRADAS (solo dueño): ver y borrar
 // ============================================================
 async function cargarListaVentas(){
+  try{ await arreglarRecuperadasSinDescuento(); }catch(e){}
   const msgEl = document.getElementById('listaVentasMsg');
   const bodyEl = document.getElementById('listaVentasBody');
   const desde = document.getElementById('listaVentasDesde').value;
@@ -5094,6 +5098,7 @@ async function repararVentasSinDescontar(){
   const desde = document.getElementById('listaVentasDesde').value;
   const hasta = document.getElementById('listaVentasHasta').value;
   msgEl.innerHTML = ''; msgEl.textContent = 'Buscando ventas cerradas que no descontaron…'; msgEl.className = 'msg';
+  try{ await arreglarRecuperadasSinDescuento(); }catch(e){}
   try{
     let q = sb.from('ventas_dia').select('*').eq('cerrado', true);
     if(desde) q = q.gte('fecha', desde);
@@ -5110,7 +5115,7 @@ async function repararVentasSinDescontar(){
     const itemsPorDia = {};
     for(const it of (items||[])){ (itemsPorDia[it.venta_dia_id] = itemsPorDia[it.venta_dia_id]||[]).push(it); }
 
-    const zombies = dias.filter(d => !conMov.has(d.id));
+    const zombies = dias.filter(d => !conMov.has(d.id) && !String(d.clave_local||'').startsWith('recup_'));  // las recuperadas ya descontaron en su momento
     if(zombies.length === 0){ msgEl.textContent = '✓ No hay ventas cerradas sin descontar. Todo está en orden.'; msgEl.className = 'msg ok'; return; }
 
     const conArticulos = zombies.filter(d => (itemsPorDia[d.id]||[]).length > 0);
@@ -6440,10 +6445,40 @@ async function asegurarVentaAbiertaPropia(){
 // Lo que sobra en lo descontado es la venta perdida. Recuperar NO toca inventario, caja ni comisión.
 // ══════════════════════════════════════════════════════════════════
 let __perdidas = {};
+
+// Mueve el descuento de inventario (y la comisión) de la venta donde se había metido la venta
+// perdida, a la venta RECUPERADA. Así la recuperada queda ligada a su descuento: sale "Finalizada"
+// y el botón de reparar no la vuelve a descontar.
+async function religarVentaRecuperada(vid, nuevoId, productos){
+  let q = sb.from('movimientos').update({venta_dia_id: nuevoId})
+    .eq('venta_dia_id', vid).eq('tipo','extraccion').like('nota','%sincronizada sin conexi%');
+  if(productos && productos.length) q = q.in('producto_id', productos);
+  const r = await q;
+  if(r.error) throw r.error;
+  try{ await sb.from('deudas').update({venta_dia_id: nuevoId}).eq('venta_dia_id', vid).like('nota','%sincronizada sin conexi%'); }catch(e){}
+}
+// Las ventas recuperadas antes de este arreglo quedaron sin su descuento ligado ("No descontó").
+// Esto las liga solo, una vez. Se llama al abrir las listas de ventas y antes de reparar.
+async function arreglarRecuperadasSinDescuento(){
+  if(!navigator.onLine) return 0;
+  const {data: recs, error} = await sb.from('ventas_dia').select('id, clave_local').like('clave_local','recup_%');
+  if(error || !recs || !recs.length) return 0;
+  const conMov = await idsConMovimiento(recs.map(r=>r.id));
+  let n = 0;
+  for(const r of recs){
+    if(conMov.has(r.id)) continue;
+    const vid = Number((/^recup_(\d+)$/.exec(r.clave_local||'')||[])[1]);
+    if(!vid) continue;
+    const {data: its} = await sb.from('venta_items').select('producto_id').eq('venta_dia_id', r.id);
+    try{ await religarVentaRecuperada(vid, r.id, [...new Set((its||[]).map(i=>Number(i.producto_id)))]); n++; }catch(e){ console.warn('No se pudo ligar la recuperada', r.id, e); }
+  }
+  return n;
+}
 async function buscarVentasPerdidas(){
   const msg = document.getElementById('perdidasMsg'), body = document.getElementById('perdidasBody');
   if(!navigator.onLine){ msg.textContent='Necesitas internet.'; msg.className='msg err'; return; }
   msg.textContent='Buscando…'; msg.className='msg'; body.innerHTML='';
+  try{ await arreglarRecuperadasSinDescuento(); }catch(e){}
   try{
     // 1) Movimientos de venta (en línea y sincronizados) que salen de una venta
     const movs = [];
@@ -6518,6 +6553,9 @@ async function recuperarVentaPerdida(vid, sinPreguntar){
     if(r.error) throw r.error;
     const ri = await sb.from('venta_items').insert(v.items.map(i=>({venta_dia_id:r.data.id, producto_id:i.producto_id, cantidad:i.cantidad, precio_venta:i.precio_venta, costo:i.costo})));
     if(ri.error){ await sb.from('ventas_dia').delete().eq('id', r.data.id); throw ri.error; }
+    // Su descuento de inventario pasa a esta venta (si falla, se deshace todo: nunca queda "No descontó")
+    try{ await religarVentaRecuperada(vid, r.data.id, v.items.map(i=>i.producto_id)); }
+    catch(eL){ await sb.from('venta_items').delete().eq('venta_dia_id', r.data.id); await sb.from('ventas_dia').delete().eq('id', r.data.id); throw eL; }
     delete __perdidas[vid];
     if(!sinPreguntar) buscarVentasPerdidas();
     return true;
@@ -8359,6 +8397,7 @@ async function entrarComo(usuario){
     aplicarRestriccionesDeRol();
     actualizarConexionAdminUI();
     cargarTodo();
+    if(usuarioActual.rol==='dueno'){ setTimeout(()=>{ arreglarRecuperadasSinDescuento().catch(()=>{}); }, 2000); }
   }
 }
 
@@ -9929,6 +9968,6 @@ if('serviceWorker' in navigator){
 
 iniciarApp();
 </script>
-<div id="versionApp" style="position:fixed; bottom:6px; right:8px; font-size:11px; color:var(--muted); opacity:0.6; z-index:9999; pointer-events:none; user-select:none">v93</div>
+<div id="versionApp" style="position:fixed; bottom:6px; right:8px; font-size:11px; color:var(--muted); opacity:0.6; z-index:9999; pointer-events:none; user-select:none">v95</div>
 </body>
 </html>
