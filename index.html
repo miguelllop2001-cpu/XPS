@@ -1189,6 +1189,14 @@
   <div id="tab-estadisticas" class="tab" style="display:none">
 
     <div class="card">
+      <h2>🛟 Ventas sin internet que se perdieron</h2>
+      <p style="color:var(--muted); font-size:13px; margin:0 0 10px">Busca ventas hechas sin internet que descontaron el inventario pero no quedaron registradas como venta (un error ya corregido). Las puedes recuperar: se recrea la venta con el precio actual del producto. No toca el inventario, la caja ni las comisiones (eso ya se hizo bien en su momento).</p>
+      <button class="ghost" style="width:100%" onclick="buscarVentasPerdidas()">🔎 Buscar ventas perdidas</button>
+      <div id="perdidasMsg" class="msg"></div>
+      <div id="perdidasBody" style="margin-top:8px"></div>
+    </div>
+
+    <div class="card">
       <h2>🗂️ Todas las ventas registradas</h2>
       <p style="color:var(--muted); font-size:13px; margin:0 0 12px">Aquí ves TODAS las ventas que lee el programa, tal como están guardadas. Puedes eliminar las que estén repetidas o mal registradas.</p>
       <div class="row">
@@ -6028,14 +6036,14 @@ async function buscarOAbrirVentaDia(){
     try{
       const r = await sb.from('ventas_dia').select('*')
         .eq('almacen_id', puestoActual.id).eq('fecha', hoy).eq('cerrado', false)
-        .eq('usuario_id', usuarioActual.id).order('id', {ascending:true});
+        .eq('usuario_id', usuarioActual.id).is('clave_local', null).order('id', {ascending:true});
       if(r.error) throw r.error;
       const elegido = await consolidarDiasAbiertos(r.data || []);
       return {data: elegido, porUsuario: true};
     }catch(e){
       // La columna usuario_id no existe aún: usamos el filtro por puesto (comportamiento anterior)
       const r = await sb.from('ventas_dia').select('*')
-        .eq('almacen_id', puestoActual.id).eq('fecha', hoy).eq('cerrado', false).order('id', {ascending:true});
+        .eq('almacen_id', puestoActual.id).eq('fecha', hoy).eq('cerrado', false).is('clave_local', null).order('id', {ascending:true});
       const elegido = await consolidarDiasAbiertos(r.data || []);
       return {data: elegido, porUsuario: false};
     }
@@ -6407,9 +6415,126 @@ document.getElementById('finEfectivo').addEventListener('input', e=>{ e.target.d
 
 // Guarda el estado actual del carrito en venta_items (borra y reinserta; el día sigue abierto)
 // Si estamos sin internet o falla la red, no truena: el carrito ya quedó respaldado en el teléfono.
+// La venta del carrito (ventaDiaAbiertaId) tiene que seguir ABIERTA. Si otro teléfono, el dueño o
+// una sincronización ya la cerró (o la borró), NO se toca: se abre una venta nueva para este carrito.
+// Así el carrito jamás borra ni reemplaza los artículos de una venta ya registrada.
+async function asegurarVentaAbiertaPropia(){
+  if(!ventaDiaAbiertaId) return;
+  const {data, error} = await sb.from('ventas_dia').select('id, cerrado').eq('id', ventaDiaAbiertaId).maybeSingle();
+  if(error) throw error;
+  if(data && !data.cerrado) return;
+  const fila = {almacen_id:puestoActual.id, fecha:fechaHoyLocal(), usuario_id: usuarioActual.id};
+  let r = await sb.from('ventas_dia').insert(fila).select().single();
+  if(r.error && /usuario_id|column/.test(r.error.message||'')){ delete fila.usuario_id; r = await sb.from('ventas_dia').insert(fila).select().single(); }
+  if(r.error) throw r.error;
+  console.warn('La venta #'+ventaDiaAbiertaId+' ya estaba cerrada: este carrito sigue en la #'+r.data.id+' para no pisarla.');
+  ventaDiaAbiertaId = r.data.id;
+}
+
+// ══════════════════════════════════════════════════════════════════
+// 🛟 RECUPERAR VENTAS SIN INTERNET QUE SE PERDIERON
+// Con el error viejo, una venta sin internet se metía dentro de la venta abierta del vendedor y
+// luego el carrito le reemplazaba los artículos: el inventario sí se descontó (movimiento
+// "Venta del día (sincronizada sin conexión)") pero la venta no quedó. Aquí se comparan, en cada
+// venta que tiene esos movimientos, las unidades DESCONTADAS contra las unidades REGISTRADAS.
+// Lo que sobra en lo descontado es la venta perdida. Recuperar NO toca inventario, caja ni comisión.
+// ══════════════════════════════════════════════════════════════════
+let __perdidas = {};
+async function buscarVentasPerdidas(){
+  const msg = document.getElementById('perdidasMsg'), body = document.getElementById('perdidasBody');
+  if(!navigator.onLine){ msg.textContent='Necesitas internet.'; msg.className='msg err'; return; }
+  msg.textContent='Buscando…'; msg.className='msg'; body.innerHTML='';
+  try{
+    // 1) Movimientos de venta (en línea y sincronizados) que salen de una venta
+    const movs = [];
+    for(let d=0;;d+=1000){
+      const r = await sb.from('movimientos').select('venta_dia_id, producto_id, cantidad, nota, creado_en')
+        .eq('tipo','extraccion').like('nota','Venta del día%').not('venta_dia_id','is',null).range(d, d+999);
+      if(r.error) throw r.error; movs.push(...(r.data||[])); if(!r.data || r.data.length<1000) break;
+    }
+    // Solo las ventas que tienen al menos un movimiento de sincronización
+    const conSync = new Set(movs.filter(m=>/sincronizada sin conexi/i.test(m.nota||'')).map(m=>Number(m.venta_dia_id)));
+    if(!conSync.size){ msg.textContent='No hay ventas perdidas. Todo cuadra. 👍'; msg.className='msg ok'; return; }
+    const ids = [...conSync];
+    // 2) Artículos registrados de esas ventas, y las ventas mismas
+    const items = [], dias = [];
+    for(let i=0;i<ids.length;i+=200){
+      const lote = ids.slice(i,i+200);
+      const ri = await sb.from('venta_items').select('venta_dia_id, producto_id, cantidad').in('venta_dia_id', lote);
+      if(ri.error) throw ri.error; items.push(...(ri.data||[]));
+      const rd = await sb.from('ventas_dia').select('id, almacen_id, usuario_id, fecha').in('id', lote);
+      if(rd.error) throw rd.error; dias.push(...(rd.data||[]));
+    }
+    // 3) ¿Ya se recuperaron antes? (clave recup_<id>)
+    const yaRec = new Set();
+    const rr = await sb.from('ventas_dia').select('clave_local').like('clave_local','recup_%');
+    (rr.data||[]).forEach(x=>{ const m = /^recup_(\d+)$/.exec(x.clave_local||''); if(m) yaRec.add(Number(m[1])); });
+
+    __perdidas = {};
+    for(const vid of ids){
+      if(yaRec.has(vid)) continue;
+      const desc = {}, reg = {};
+      movs.filter(m=>Number(m.venta_dia_id)===vid).forEach(m=>{ desc[m.producto_id]=(desc[m.producto_id]||0)+Number(m.cantidad||0); });
+      items.filter(it=>Number(it.venta_dia_id)===vid).forEach(it=>{ reg[it.producto_id]=(reg[it.producto_id]||0)+Number(it.cantidad||0); });
+      const falta = [];
+      for(const pid of Object.keys(desc)){
+        const n = desc[pid] - (reg[pid]||0);
+        if(n > 1e-9){
+          const p = (PRODUCTOS||[]).find(x=>Number(x.id)===Number(pid)) || {};
+          falta.push({producto_id:Number(pid), nombre:p.nombre||('#'+pid), cantidad:n, precio_venta:Number(p.precio_venta)||0, costo:Number(p.costo)||0});
+        }
+      }
+      if(!falta.length) continue;
+      const dia = dias.find(d=>Number(d.id)===vid) || {};
+      const fechaMov = movs.find(m=>Number(m.venta_dia_id)===vid && /sincronizada/i.test(m.nota||''));
+      __perdidas[vid] = {vid, almacen_id:dia.almacen_id, usuario_id:dia.usuario_id||null, fecha:dia.fecha || (fechaMov?String(fechaMov.creado_en).slice(0,10):fechaHoyLocal()), items:falta};
+    }
+    const lista = Object.values(__perdidas);
+    if(!lista.length){ msg.textContent='No hay ventas perdidas. Todo cuadra. 👍'; msg.className='msg ok'; return; }
+    body.innerHTML = lista.map(v=>{
+      const alm = (ALMACENES||[]).find(a=>Number(a.id)===Number(v.almacen_id));
+      const total = v.items.reduce((t,i)=>t+i.cantidad*i.precio_venta,0);
+      return `<div style="border:1px solid var(--border); border-radius:12px; padding:10px 12px; margin-bottom:8px">
+        <div style="font-weight:700">${alm?alm.nombre:'Puesto'} · ${v.fecha}</div>
+        <div style="font-size:13px; color:var(--muted); margin:4px 0 8px">${v.items.map(i=>`${i.nombre} ×${num(i.cantidad)} a $${num(i.precio_venta)}`).join('<br>')}</div>
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px">
+          <div style="font-weight:800">$${num(total)}</div>
+          <button class="primary" style="padding:8px 12px" onclick="recuperarVentaPerdida(${v.vid})">🛟 Recuperar</button>
+        </div></div>`;
+    }).join('') + (lista.length>1 ? `<button class="ghost" style="width:100%" onclick="recuperarTodasPerdidas()">🛟 Recuperar todas (${lista.length})</button>` : '');
+    msg.textContent = `Encontré ${lista.length} venta(s) perdida(s). Revisa los precios: se usa el precio actual del producto.`; msg.className='msg';
+  }catch(e){ msg.textContent='No se pudo buscar: '+((e&&e.message)||e); msg.className='msg err'; }
+}
+async function recuperarVentaPerdida(vid, sinPreguntar){
+  const v = __perdidas[vid]; if(!v) return false;
+  const total = Number(v.items.reduce((t,i)=>t+i.cantidad*i.precio_venta,0).toFixed(2));
+  if(!sinPreguntar && !confirm(`Se recrea la venta del ${v.fecha} por $${num(total)}.\nNo se toca el inventario (ya se descontó). ¿Seguir?`)) return false;
+  try{
+    const clave = 'recup_' + vid;
+    const ya = await sb.from('ventas_dia').select('id').eq('clave_local', clave).maybeSingle();
+    if(ya.data){ delete __perdidas[vid]; return true; }   // ya estaba recuperada
+    const fila = {almacen_id:v.almacen_id, fecha:v.fecha, usuario_id:v.usuario_id, total, cerrado:true, cerrado_en:new Date().toISOString(), clave_local:clave};
+    const r = await sb.from('ventas_dia').insert(fila).select().single();
+    if(r.error) throw r.error;
+    const ri = await sb.from('venta_items').insert(v.items.map(i=>({venta_dia_id:r.data.id, producto_id:i.producto_id, cantidad:i.cantidad, precio_venta:i.precio_venta, costo:i.costo})));
+    if(ri.error){ await sb.from('ventas_dia').delete().eq('id', r.data.id); throw ri.error; }
+    delete __perdidas[vid];
+    if(!sinPreguntar) buscarVentasPerdidas();
+    return true;
+  }catch(e){ alert('No se pudo recuperar: '+((e&&e.message)||e)); return false; }
+}
+async function recuperarTodasPerdidas(){
+  const ids = Object.keys(__perdidas).map(Number); if(!ids.length) return;
+  if(!confirm(`Se recrean ${ids.length} ventas perdidas con el precio actual de cada producto. No se toca el inventario. ¿Seguir?`)) return;
+  let ok = 0; for(const vid of ids){ if(await recuperarVentaPerdida(vid, true)) ok++; }
+  alert(`Listo: ${ok} venta(s) recuperada(s).`);
+  buscarVentasPerdidas();
+}
+
 async function guardarItemsEnDB(){
   if(modoLocal || !ventaDiaAbiertaId || !navigator.onLine) return;
   try{
+    await asegurarVentaAbiertaPropia();   // nunca escribir en una venta que ya se cerró
     await sb.from('venta_items').delete().eq('venta_dia_id', ventaDiaAbiertaId);
     if(carrito.length===0) return;
     const rows = carrito.map(it=>({
@@ -7166,11 +7291,11 @@ async function finalizarDiaInterno(){
       try{
         const r = await sb.from('ventas_dia').select('*')
           .eq('almacen_id', puestoActual.id).eq('fecha', hoy).eq('cerrado', false)
-          .eq('usuario_id', usuarioActual.id).order('id', {ascending:true});
+          .eq('usuario_id', usuarioActual.id).is('clave_local', null).order('id', {ascending:true});
         diaExistente = (r.data || [])[0] || null;
       }catch(e){
         const r = await sb.from('ventas_dia').select('*')
-          .eq('almacen_id', puestoActual.id).eq('fecha', hoy).eq('cerrado', false).order('id', {ascending:true});
+          .eq('almacen_id', puestoActual.id).eq('fecha', hoy).eq('cerrado', false).is('clave_local', null).order('id', {ascending:true});
         diaExistente = (r.data || [])[0] || null;
       }
       if(diaExistente){
@@ -7186,6 +7311,9 @@ async function finalizarDiaInterno(){
         ventaDiaAbiertaId = r.data.id;
       }
     }
+    // Si esa venta ya la cerró alguien más (otro teléfono, el dueño, una sincronización),
+    // este carrito se finaliza en una venta NUEVA y no pisa la que ya estaba registrada.
+    await asegurarVentaAbiertaPropia();
 
     // Asignamos una clave única a cada línea del carrito ANTES de verificar o descontar. Así,
     // si un reintento vuelve a entrar aquí, reconocemos qué líneas ya se aplicaron por su clave.
@@ -7554,6 +7682,7 @@ async function finalizarDiaInterno(){
       cobra_comision: esComodin() ? usuarioActual.nombre : puestoActual.nombre,
       es_comodin: esComodin(),
       usuario_id: usuarioActual.id, // el perfil dueño de esta venta
+      venta_dia_id_origen: ventaDiaAbiertaId || null, // la venta en línea de la que salió (por si allá sí se cerró)
       items: carrito.map(it=>({producto_id:it.producto_id, nombre:it.nombre, cantidad:it.cantidad, precio_venta:it.precio_venta, costo:it.costo, clave_local:it.clave_local, aplicado:it.aplicado===true})),
       cobros: cobrosAProcesar,
       efectivo, tarjeta, total: totalProductos
@@ -7675,12 +7804,15 @@ async function sincronizarUnDia(dia){
   // si ya hay una venta CERRADA hoy en este puesto con EXACTAMENTE los mismos artículos y el
   // mismo total, es la misma venta (por ejemplo, el dueño la subió a mano desde el perfil).
   // No se vuelve a aplicar. (Solo si NO estamos completando una fila que ya conocemos.)
-  if(!filaPrevia) try{
+  // OJO: solo se compara con la venta EN LÍNEA de la que salió esta (venta_dia_id_origen), nunca con
+  // cualquier venta del día: dos ventas idénticas el mismo día (ej. 1 caja a $1800 dos veces) son
+  // ventas DISTINTAS y las dos tienen que quedar. Antes la segunda se saltaba como "duplicada".
+  if(!filaPrevia && dia.venta_dia_id_origen) try{
     const firmaCola = (dia.items||[]).map(it=>`${it.producto_id}x${it.cantidad}@${it.precio_venta}`).sort().join('|');
     const totalCola = Number(Number(dia.total||0).toFixed(2));
     if(firmaCola){
       const {data: cerradasHoy} = await sb.from('ventas_dia').select('id, total')
-        .eq('almacen_id', dia.almacen_id).eq('fecha', dia.fecha).eq('cerrado', true);
+        .eq('id', dia.venta_dia_id_origen).eq('cerrado', true);
       const ids = (cerradasHoy||[]).map(d=>d.id);
       if(ids.length > 0){
         const {data: itemsExistentes} = await sb.from('venta_items').select('venta_dia_id, producto_id, cantidad, precio_venta').in('venta_dia_id', ids);
@@ -7704,8 +7836,11 @@ async function sincronizarUnDia(dia){
   // Agrupamos las líneas por producto (juntando las repetidas del mismo artículo) para verificar
   // y descontar CORRECTO. Antes se verificaba/descontaba línea por línea: si un producto estaba en
   // dos líneas (ej. cuchillo 1 + cuchillo 2 = 3), solo se descontaba una y el inventario quedaba mal.
+  // Las líneas marcadas "aplicado" ya se descontaron en línea antes de que se cortara la conexión:
+  // se guardan en la venta pero NO se vuelven a descontar (antes se descontaban dos veces).
   const necesarioSync = {};
-  for(const it of dia.items){ necesarioSync[it.producto_id] = (necesarioSync[it.producto_id]||0) + Number(it.cantidad); }
+  for(const it of dia.items){ if(it.aplicado === true) continue; necesarioSync[it.producto_id] = (necesarioSync[it.producto_id]||0) + Number(it.cantidad); }
+  const hayLineasYaDescontadas = dia.items.some(it => it.aplicado === true);
 
   // Obtenemos (o creamos) la fila de la venta, pero la dejamos ABIERTA por ahora. El día se
   // cierra al FINAL, solo después de descontar el inventario y guardar los artículos. Antes se
@@ -7720,21 +7855,19 @@ async function sincronizarUnDia(dia){
       try{ await sb.from('ventas_dia').update({cerrado:false}).eq('id', filaPrevia.id); }catch(e){}
     }
   } else {
-    const {data: abierto} = await sb.from('ventas_dia').select('*').eq('almacen_id', dia.almacen_id).eq('fecha', dia.fecha).eq('cerrado', false).maybeSingle();
-    if(abierto){
-      nuevo = abierto;
-      // marcamos la clave_local en la fila abierta para reconocerla si algo falla a mitad
-      try{ await sb.from('ventas_dia').update({clave_local: dia.clave_local || null}).eq('id', abierto.id); }catch(e){}
-    } else {
-      const filaDia = {almacen_id:dia.almacen_id, fecha:dia.fecha, cerrado:false, total:dia.total, clave_local: dia.clave_local || null, usuario_id: dia.usuario_id || null};
-      let rCreado = await sb.from('ventas_dia').insert(filaDia).select().single();
-      if(rCreado.error && ((rCreado.error.message||'').includes('usuario_id') || (rCreado.error.message||'').includes('column'))){
-        delete filaDia.usuario_id;
-        rCreado = await sb.from('ventas_dia').insert(filaDia).select().single();
-      }
-      if(rCreado.error) throw rCreado.error;
-      nuevo = rCreado.data;
+    // SIEMPRE una fila PROPIA para esta venta. Antes, si el puesto tenía una venta abierta (la del
+    // carrito del vendedor en línea), esta venta se metía DENTRO de esa: luego el carrito del vendedor
+    // borraba y reemplazaba los artículos y la venta sin internet desaparecía (quedaba solo el
+    // descuento del inventario). La clave_local la marca como "de sincronización": el carrito en
+    // línea nunca la toma como suya.
+    const filaDia = {almacen_id:dia.almacen_id, fecha:dia.fecha, cerrado:false, total:dia.total, clave_local: dia.clave_local || ('vd_sync_'+Date.now()), usuario_id: dia.usuario_id || null};
+    let rCreado = await sb.from('ventas_dia').insert(filaDia).select().single();
+    if(rCreado.error && ((rCreado.error.message||'').includes('usuario_id') || (rCreado.error.message||'').includes('column'))){
+      delete filaDia.usuario_id;
+      rCreado = await sb.from('ventas_dia').insert(filaDia).select().single();
     }
+    if(rCreado.error) throw rCreado.error;
+    nuevo = rCreado.data;
   }
 
   // ===== VÍA ATÓMICA en la sincronización (si la función 'descontar_y_cerrar_venta' existe en
@@ -7742,7 +7875,7 @@ async function sincronizarUnDia(dia){
   // transacción → es IMPOSIBLE que quede "cerrada sin descontar". Si la función no existe todavía,
   // caemos a la vía normal reordenada de abajo (que también descuenta ANTES de cerrar).
   let hechoPorRPC = false;
-  try{
+  if(!hayLineasYaDescontadas) try{
     const {error: rpcErr} = await sb.rpc('descontar_y_cerrar_venta', {
       p_venta_dia_id: nuevo.id, p_almacen_id: dia.almacen_id, p_fecha: dia.fecha, p_total: dia.total,
       p_items: dia.items.map(it=>({producto_id: it.producto_id, cantidad: it.cantidad, precio_venta: it.precio_venta, costo: it.costo}))
@@ -9796,6 +9929,6 @@ if('serviceWorker' in navigator){
 
 iniciarApp();
 </script>
-<div id="versionApp" style="position:fixed; bottom:6px; right:8px; font-size:11px; color:var(--muted); opacity:0.6; z-index:9999; pointer-events:none; user-select:none">v92</div>
+<div id="versionApp" style="position:fixed; bottom:6px; right:8px; font-size:11px; color:var(--muted); opacity:0.6; z-index:9999; pointer-events:none; user-select:none">v93</div>
 </body>
 </html>
